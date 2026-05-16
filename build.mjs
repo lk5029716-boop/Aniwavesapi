@@ -1,4 +1,6 @@
 import * as esbuild from "esbuild";
+import fs from "fs";
+import path from "path";
 
 await esbuild.build({
   entryPoints: ["src/index.ts"],
@@ -10,4 +12,8 @@ await esbuild.build({
   packages: "external",
 });
 
-console.log("Build complete: dist/index.mjs");
+const publicDir = path.join("dist", "public");
+fs.mkdirSync(publicDir, { recursive: true });
+fs.copyFileSync("frontend/index.html", path.join(publicDir, "index.html"));
+
+console.log("Build complete");

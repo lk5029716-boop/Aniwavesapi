@@ -2,6 +2,8 @@
 import express from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
+import path from "path";
+import { fileURLToPath } from "url";
 
 // src/routes/index.ts
 import { Router as Router3 } from "express";
@@ -235,8 +237,7 @@ async function getEmbedUrl(linkId, refererAnimeId) {
 // src/lib/logger.ts
 import pino from "pino";
 var logger = pino({
-  level: process.env["LOG_LEVEL"] ?? "info",
-  transport: process.env["NODE_ENV"] !== "production" ? { target: "pino-pretty", options: { colorize: true } } : void 0
+  level: process.env["LOG_LEVEL"] ?? "info"
 });
 
 // src/lib/anime/providers/vidplay.ts
@@ -974,6 +975,7 @@ router3.use(anime_default);
 var routes_default = router3;
 
 // src/app.ts
+var __dirname = path.dirname(fileURLToPath(import.meta.url));
 var app = express();
 app.use(
   pinoHttp({
@@ -992,6 +994,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use("/api", routes_default);
+app.use(express.static(path.join(__dirname, "public")));
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api")) return next();
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
 var app_default = app;
 
 // src/index.ts
