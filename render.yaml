@@ -1,0 +1,3 @@
+# Render build configuration
+# Build Command: npm install && npm run build
+# Start Command: npm start

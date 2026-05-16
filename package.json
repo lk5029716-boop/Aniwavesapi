@@ -1,0 +1,31 @@
+{
+  "name": "aniwaves-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node dist/index.mjs",
+    "dev": "node build.mjs && node dist/index.mjs"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.6",
+    "crypto-js": "^4.2.0",
+    "express": "^5.2.1",
+    "node-cache": "^5.1.2",
+    "pino": "^9.14.0",
+    "pino-http": "^10.5.0",
+    "playwright-core": "^1.60.0"
+  },
+  "devDependencies": {
+    "@types/cheerio": "^0.22.35",
+    "@types/cors": "^2.8.19",
+    "@types/crypto-js": "^4.2.2",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.0.0",
+    "esbuild": "0.25.8",
+    "esbuild-plugin-pino": "^2.3.3"
+  }
+}
