@@ -3,242 +3,181 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Aniwaves API - Interactive Documentation</title>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<title>Aniwaves API</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh}
-.container{max-width:900px;margin:0 auto;padding:24px}
-h1{color:#58a6ff;font-size:28px;margin-bottom:8px}
-.subtitle{color:#8b949e;margin-bottom:32px}
-.endpoint{border:1px solid #30363d;border-radius:6px;margin-bottom:8px;overflow:hidden}
-.endpoint-header{display:flex;align-items:center;padding:12px 16px;background:#161b22;cursor:pointer;user-select:none}
-.endpoint-header:hover{background:#1c2128}
-.method{padding:2px 8px;border-radius:4px;font-size:12px;font-weight:700;margin-right:12px;min-width:60px;text-align:center}
-.get{background:#3fb950;color:#fff}
-.path{font-family:monospace;font-size:14px;color:#c9d1d9}
-.arrow{margin-left:auto;color:#8b949e;transition:transform 0.2s}
-.arrow.open{transform:rotate(90deg)}
-.endpoint-body{padding:16px;background:#0d1117;border-top:1px solid #30363d;display:none}
-.endpoint-body.open{display:block}
-.params-table{width:100%;border-collapse:collapse;margin-bottom:16px}
-.params-table th{text-align:left;padding:8px;background:#161b22;color:#8b949e;font-size:12px;border:1px solid #30363d}
-.params-table td{padding:8px;border:1px solid #30363d;font-family:monospace;font-size:13px}
-.param-name{color:#58a6ff}
-.param-type{color:#a371f7;font-size:11px}
-.param-required{color:#f85149;font-size:11px}
-.param-optional{color:#8b949e;font-size:11px}
-.test-btn{background:#238636;color:#fff;border:1px solid #2ea043;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:14px;margin-right:8px}
-.test-btn:hover{background:#2ea043}
-.test-btn:disabled{background:#30363d;color:#6e7681;cursor:not-allowed}
-.response-box{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px;margin-top:16px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow:auto;color:#c9d1d9}
-.response-box.error{color:#f85149}
-.input-field{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#c9d1d9;font-family:monospace;font-size:13px;width:200px;margin-right:8px}
-.input-field:focus{outline:none;border-color:#58a6ff}
-.status-badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:600}
-.status-ok{background:#238636;color:#fff}
-.status-err{background:#da3633;color:#fff}
-.loading{color:#d29922}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;min-height:100vh;padding:20px}
+h1{color:#00d4ff;font-size:24px;margin-bottom:4px}
+.subtitle{color:#666;margin-bottom:24px;font-size:14px}
+.section{background:#111;border:1px solid #222;border-radius:8px;padding:20px;margin-bottom:16px}
+.section h2{color:#00d4ff;font-size:16px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.method{background:#00d4ff;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}
+label{display:block;font-size:13px;color:#888;margin-bottom:4px;margin-top:12px}
+input,select{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:14px;width:100%;max-width:400px}
+input:focus,select:focus{outline:none;border-color:#00d4ff}
+button{background:#00d4ff;color:#000;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;margin-top:16px}
+button:hover{background:#00b8e6}
+button:disabled{background:#333;color:#666;cursor:not-allowed}
+.result{background:#0d0d0d;border:1px solid #222;border-radius:6px;padding:16px;margin-top:16px;font-family:'Courier New',monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:500px;overflow:auto;line-height:1.5}
+.result:empty{display:none}
+.ok{color:#00ff88}
+.err{color:#ff4444}
+.info{color:#ffaa00}
+.url-display{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:8px 12px;font-family:monospace;font-size:12px;color:#888;margin-top:8px;word-break:break-all}
 </style>
 </head>
 <body>
-<div id="root"></div>
-<script type="text/babel">
-const { useState } = React;
 
-const API_BASE = 'https://aniwavesapi.onrender.com';
+<h1>🎬 Aniwaves API</h1>
+<p class="subtitle">Test all endpoints live — <span class="ok">● Server Online</span></p>
 
-const endpoints = [
-  {
-    method: 'GET',
-    path: '/api/health',
-    title: 'Health Check',
-    description: 'Check if the API server is running.',
-    params: [],
-  },
-  {
-    method: 'GET',
-    path: '/api/search',
-    title: 'Search & Filter Anime',
-    description: 'Search anime by keyword.',
-    params: [
-      { name: 'q', type: 'string', required: true, description: 'Search query (e.g. naruto)' },
-    ],
-  },
-  {
-    method: 'GET',
-    path: '/api/details',
-    title: 'Anime Details',
-    description: 'Get full details for an anime.',
-    params: [
-      { name: 'id', type: 'string', required: true, description: 'Anime ID (e.g. naruto-76396)' },
-    ],
-  },
-  {
-    method: 'GET',
-    path: '/api/episodes',
-    title: 'Anime Episodes',
-    description: 'Get episode list for an anime.',
-    params: [
-      { name: 'id', type: 'string', required: true, description: 'Anime ID (e.g. naruto-76396)' },
-    ],
-  },
-  {
-    method: 'GET',
-    path: '/api/servers',
-    title: 'Episode Servers List',
-    description: 'Get available servers for a specific episode.',
-    params: [
-      { name: 'id', type: 'string', required: true, description: 'Anime ID' },
-      { name: 'ep', type: 'number', required: true, description: 'Episode number' },
-      { name: 'type', type: 'string', required: false, description: 'sub, dub, or raw (default: sub)' },
-    ],
-  },
-  {
-    method: 'GET',
-    path: '/api/stream',
-    title: 'Episode Video Stream',
-    description: 'Get the video stream URL for an episode. If no server is specified, tries all servers in order.',
-    params: [
-      { name: 'id', type: 'string', required: true, description: 'Anime ID' },
-      { name: 'ep', type: 'number', required: true, description: 'Episode number' },
-      { name: 'type', type: 'string', required: false, description: 'sub, dub, or raw (default: sub)' },
-      { name: 'server', type: 'string', required: false, description: 'Specific server name (e.g. vidplay, byfms, dghg)' },
-    ],
-  },
-];
+<!-- SEARCH -->
+<div class="section">
+<h2><span class="method">GET</span> Search Anime</h2>
+<label>Search Query *</label>
+<input id="search-q" placeholder="e.g. naruto, one piece, attack on titan" value="naruto">
+<div class="url-display" id="search-url"></div>
+<button onclick="doSearch()">Search</button>
+<div class="result" id="search-result"></div>
+</div>
 
-function Endpoint({ endpoint }) {
-  const [open, setOpen] = useState(false);
-  const [values, setValues] = useState({});
-  const [response, setResponse] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState(null);
+<!-- DETAILS -->
+<div class="section">
+<h2><span class="method">GET</span> Anime Details</h2>
+<label>Anime ID *</label>
+<input id="details-id" placeholder="e.g. naruto-76396" value="naruto-76396">
+<div class="url-display" id="details-url"></div>
+<button onclick="doDetails()">Get Details</button>
+<div class="result" id="details-result"></div>
+</div>
 
-  const handleTest = async () => {
-    setLoading(true);
-    setResponse(null);
-    setStatus(null);
+<!-- EPISODES -->
+<div class="section">
+<h2><span class="method">GET</span> Episodes</h2>
+<label>Anime ID *</label>
+<input id="episodes-id" placeholder="e.g. naruto-76396" value="naruto-76396">
+<div class="url-display" id="episodes-url"></div>
+<button onclick="doEpisodes()">Get Episodes</button>
+<div class="result" id="episodes-result"></div>
+</div>
 
-    const params = new URLSearchParams();
-    for (const p of endpoint.params) {
-      const val = values[p.name];
-      if (val) params.set(p.name, val);
-    }
+<!-- SERVERS -->
+<div class="section">
+<h2><span class="method">GET</span> Servers</h2>
+<label>Anime ID *</label>
+<input id="servers-id" placeholder="e.g. naruto-76396" value="naruto-76396">
+<label>Episode Number *</label>
+<input id="servers-ep" type="number" placeholder="e.g. 1" value="1">
+<label>Type</label>
+<select id="servers-type">
+<option value="sub">sub</option>
+<option value="dub">dub</option>
+<option value="raw">raw</option>
+</select>
+<div class="url-display" id="servers-url"></div>
+<button onclick="doServers()">Get Servers</button>
+<div class="result" id="servers-result"></div>
+</div>
 
-    const url = `${API_BASE}${endpoint.path}?${params}`;
-    try {
-      const res = await fetch(url);
-      setStatus(res.status);
-      const text = await res.text();
-      try {
-        setResponse(JSON.stringify(JSON.parse(text), null, 2));
-      } catch {
-        setResponse(text);
-      }
-    } catch (err) {
-      setResponse('Error: ' + err.message);
-      setStatus(0);
-    }
-    setLoading(false);
-  };
+<!-- STREAM -->
+<div class="section">
+<h2><span class="method">GET</span> Stream URL</h2>
+<label>Anime ID *</label>
+<input id="stream-id" placeholder="e.g. naruto-76396" value="naruto-76396">
+<label>Episode Number *</label>
+<input id="stream-ep" type="number" placeholder="e.g. 1" value="1">
+<label>Type</label>
+<select id="stream-type">
+<option value="sub">sub</option>
+<option value="dub">dub</option>
+</select>
+<label>Server (leave empty for auto)</label>
+<select id="stream-server">
+<option value="">Auto (try all)</option>
+<option value="vidplay">Vidplay</option>
+<option value="byfms">BYFMS</option>
+<option value="dghg">DGHG</option>
+</select>
+<div class="url-display" id="stream-url"></div>
+<button onclick="doStream()">Get Stream</button>
+<div class="result" id="stream-result"></div>
+</div>
 
-  return (
-    <div className="endpoint">
-      <div className="endpoint-header" onClick={() => setOpen(!open)}>
-        <span className={`method ${endpoint.method.toLowerCase()}`}>{endpoint.method}</span>
-        <span className="path">{endpoint.path}</span>
-        <span style={{ marginLeft: 12, color: '#8b949e', fontSize: 13 }}>{endpoint.title}</span>
-        <span className={`arrow ${open ? 'open' : ''}`}>▶</span>
-      </div>
-      {open && (
-        <div className="endpoint-body">
-          <p style={{ marginBottom: 16, color: '#8b949e' }}>{endpoint.description}</p>
+<script>
+const BASE = 'https://aniwavesapi.onrender.com';
 
-          {endpoint.params.length > 0 && (
-            <table className="params-table">
-              <thead>
-                <tr>
-                  <th>Parameter</th>
-                  <th>Type</th>
-                  <th>Required</th>
-                  <th>Description</th>
-                  <th>Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {endpoint.params.map(p => (
-                  <tr key={p.name}>
-                    <td className="param-name">{p.name}</td>
-                    <td className="param-type">{p.type}</td>
-                    <td>
-                      <span className={p.required ? 'param-required' : 'param-optional'}>
-                        {p.required ? 'required' : 'optional'}
-                      </span>
-                    </td>
-                    <td>{p.description}</td>
-                    <td>
-                      <input
-                        className="input-field"
-                        placeholder={p.name}
-                        value={values[p.name] || ''}
-                        onChange={e => setValues({ ...values, [p.name]: e.target.value })}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          <button className="test-btn" onClick={handleTest} disabled={loading}>
-            {loading ? '⏳ Loading...' : '▶ Test Endpoint'}
-          </button>
-
-          {status !== null && (
-            <span className={`status-badge ${status >= 200 && status < 300 ? 'status-ok' : 'status-err'}`}>
-              {status >= 200 && status < 300 ? '✓' : '✗'} {status}
-            </span>
-          )}
-
-          {response && (
-            <div className={`response-box ${status >= 200 && status < 300 ? '' : 'error'}`}>
-              {response}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
+function showUrl(id, url){document.getElementById(id).textContent=url}
+function showResult(id, data, isErr){
+  const el=document.getElementById(id);
+  el.textContent=typeof data==='string'?data:JSON.stringify(data,null,2);
+  el.className='result '+(isErr?'err':'ok');
 }
 
-function APIDocs() {
-  return (
-    <div className="container">
-      <h1>🎬 Aniwaves API</h1>
-      <p className="subtitle">Interactive Documentation — Click an endpoint to expand, fill in parameters, and test it live.</p>
-
-      <div style={{ marginBottom: 24, padding: 16, background: '#161b22', borderRadius: 6, border: '1px solid #30363d' }}>
-        <strong style={{ color: '#58a6ff' }}>Base URL:</strong>
-        <code style={{ marginLeft: 8, color: '#c9d1d9' }}>{API_BASE}</code>
-      </div>
-
-      <h2 style={{ color: '#c9d1d9', fontSize: 18, marginBottom: 16 }}>Available Endpoints</h2>
-
-      {endpoints.map(ep => (
-        <Endpoint key={ep.path} endpoint={ep} />
-      ))}
-
-      <div style={{ marginTop: 48, padding: '16px 0', borderTop: '1px solid #30363d', color: '#6e7681', fontSize: 13 }}>
-        Aniwaves API — Built with Node.js + Express — Deployed on Render
-      </div>
-    </div>
-  );
+async function fetchAPI(url, resultId){
+  showResult(resultId,'⏳ Loading...',false);
+  try{
+    const r=await fetch(url);
+    const t=await r.text();
+    let d;try{d=JSON.parse(t)}catch{d=t}
+    if(r.ok) showResult(resultId,d,false);
+    else showResult(resultId,'HTTP '+r.status+'\n'+t,true);
+  }catch(e){showResult(resultId,'Error: '+e.message,true)}
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<APIDocs />);
+function buildUrl(path,params){
+  const p=new URLSearchParams();
+  for(const[k,v]of Object.entries(params)){if(v)p.set(k,v)}
+  const q=p.toString();return BASE+path+(q?'?'+q:'');
+}
+
+function doSearch(){
+  const q=document.getElementById('search-id')?.value||document.getElementById('search-q').value;
+  const url=buildUrl('/api/search',{q});
+  showUrl('search-url',url);
+  fetchAPI(url,'search-result');
+}
+function doDetails(){
+  const id=document.getElementById('details-id').value;
+  const url=buildUrl('/api/details',{id});
+  showUrl('details-url',url);
+  fetchAPI(url,'details-result');
+}
+function doEpisodes(){
+  const id=document.getElementById('episodes-id').value;
+  const url=buildUrl('/api/episodes',{id});
+  showUrl('episodes-url',url);
+  fetchAPI(url,'episodes-result');
+}
+function doServers(){
+  const id=document.getElementById('servers-id').value;
+  const ep=document.getElementById('servers-ep').value;
+  const type=document.getElementById('servers-type').value;
+  const url=buildUrl('/api/servers',{id,ep,type});
+  showUrl('servers-url',url);
+  fetchAPI(url,'servers-result');
+}
+function doStream(){
+  const id=document.getElementById('stream-id').value;
+  const ep=document.getElementById('stream-ep').value;
+  const type=document.getElementById('stream-type').value;
+  const server=document.getElementById('stream-server').value;
+  const params={id,ep,type};
+  if(server)params.server=server;
+  const url=buildUrl('/api/stream',params);
+  showUrl('stream-url',url);
+  fetchAPI(url,'stream-result');
+}
+
+// Live URL preview
+['search-q','details-id','episodes-id','servers-id','servers-ep','servers-type','stream-id','stream-ep','stream-type','stream-server'].forEach(id=>{
+  document.getElementById(id)?.addEventListener('input',()=>{
+    if(id==='search-q')doSearch();
+    if(id.startsWith('details'))doDetails();
+    if(id.startsWith('episodes'))doEpisodes();
+    if(id.startsWith('servers'))doServers();
+    if(id.startsWith('stream'))doStream();
+  });
+});
 </script>
 </body>
 </html>
