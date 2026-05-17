@@ -1185,24 +1185,216 @@ function isEchovideoHost(url) {
 }
 
 // src/lib/anime/providers/weneverbeenfree.ts
+import axios5 from "axios";
+async function tryDecryptAesGcm(ivBase64, cipherBase64, keyHex) {
+  try {
+    const { webcrypto } = await import("node:crypto");
+    const subtle = webcrypto.subtle;
+    const keyBytes = Buffer.from(keyHex, "hex");
+    const iv = Buffer.from(ivBase64, "base64");
+    const ciphertext = Buffer.from(cipherBase64, "base64");
+    const cryptoKey = await subtle.importKey(
+      "raw",
+      keyBytes,
+      { name: "AES-GCM" },
+      false,
+      ["decrypt"]
+    );
+    const decrypted = await subtle.decrypt(
+      { name: "AES-GCM", iv },
+      cryptoKey,
+      ciphertext
+    );
+    return new TextDecoder().decode(decrypted);
+  } catch {
+    return null;
+  }
+}
+var KNOWN_KEYS_HEX = [];
 async function extractWeneverbeenfree(embedUrl, skipData) {
+  const urlObj = new URL(embedUrl);
+  const host = urlObj.hostname;
+  const videoId = urlObj.pathname.split("/").filter(Boolean).pop();
+  if (!videoId) {
+    logger.error({ embedUrl }, "[WNBF S1] FAILED \u2014 no videoId in embed URL");
+    return extractViaPlaywright(embedUrl, "weneverbeenfree", skipData);
+  }
   logger.info(
-    { embedUrl: embedUrl.slice(0, 90) },
-    "[WNBF] using Playwright headless browser extractor (Byse CDN)"
+    { embedUrl: embedUrl.slice(0, 80), host, videoId },
+    "[WNBF S1] starting weneverbeenfree extraction"
   );
-  return extractViaPlaywright(embedUrl, "weneverbeenfree", skipData);
+  const commonHeaders = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    Accept: "application/json, */*",
+    Origin: `https://${host}`,
+    Referer: `https://${host}/e/${videoId}`
+  };
+  logger.info({ videoId }, "[WNBF S2] fetching embed page for CF cookies");
+  let cfCookies = "";
+  try {
+    const pageResp = await axios5.get(embedUrl, {
+      timeout: 12e3,
+      headers: {
+        ...commonHeaders,
+        Accept: "text/html,*/*",
+        Referer: "https://aniwaves.ru/"
+      },
+      withCredentials: true
+    });
+    const setCookie = pageResp.headers["set-cookie"];
+    if (Array.isArray(setCookie)) {
+      cfCookies = setCookie.map((c) => c.split(";")[0]).join("; ");
+    }
+    logger.debug(
+      { status: pageResp.status, cookieCount: (setCookie ?? []).length },
+      "[WNBF S2] embed page fetched"
+    );
+  } catch (err) {
+    logger.warn({ error: err.message }, "[WNBF S2] embed page fetch failed");
+  }
+  logger.info({ videoId }, "[WNBF S3] posting heartbeat to get encrypted payload");
+  const heartbeatUrl = `https://${host}/api/videos/${videoId}/embed/heartbeat`;
+  let heartbeatData = null;
+  try {
+    const resp = await axios5.post(
+      heartbeatUrl,
+      { fileId: videoId },
+      {
+        timeout: 12e3,
+        headers: {
+          ...commonHeaders,
+          "Content-Type": "application/json",
+          ...cfCookies ? { Cookie: cfCookies } : {}
+        }
+      }
+    );
+    heartbeatData = resp.data;
+    logger.debug(
+      {
+        status: resp.status,
+        hasIv: !!heartbeatData?.iv,
+        hasPayload: !!heartbeatData?.payload,
+        hasSources: !!heartbeatData?.sources,
+        error: heartbeatData?.error
+      },
+      "[WNBF S3] heartbeat response"
+    );
+  } catch (err) {
+    const e = err;
+    logger.warn(
+      {
+        heartbeatUrl,
+        error: e.message,
+        status: e.response?.status,
+        body: JSON.stringify(e.response?.data ?? "").slice(0, 200)
+      },
+      "[WNBF S3] heartbeat request failed \u2014 falling back to Playwright"
+    );
+    return extractViaPlaywright(embedUrl, "weneverbeenfree", skipData);
+  }
+  if (heartbeatData?.error) {
+    logger.warn(
+      { error: heartbeatData.error },
+      "[WNBF S3] heartbeat returned error \u2014 falling back to Playwright"
+    );
+    return extractViaPlaywright(embedUrl, "weneverbeenfree", skipData);
+  }
+  if (heartbeatData?.sources) {
+    logger.info("[WNBF S3] heartbeat returned unencrypted sources \u2014 skipping decrypt");
+    const rawSrc2 = heartbeatData.sources;
+    const m3u82 = typeof rawSrc2 === "string" ? rawSrc2 : rawSrc2[0]?.file ?? rawSrc2[0]?.url ?? null;
+    return buildResult("weneverbeenfree", m3u82, heartbeatData, skipData);
+  }
+  const { iv, payload } = heartbeatData ?? {};
+  if (!iv || !payload) {
+    logger.warn("[WNBF S4] no iv/payload in heartbeat \u2014 falling back to Playwright");
+    return extractViaPlaywright(embedUrl, "weneverbeenfree", skipData);
+  }
+  logger.info("[WNBF S4] attempting AES-GCM decryption with known keys");
+  let decryptedText = null;
+  for (const keyHex of KNOWN_KEYS_HEX) {
+    decryptedText = await tryDecryptAesGcm(iv, payload, keyHex);
+    if (decryptedText) {
+      logger.debug(
+        { keyHex: keyHex.slice(0, 8) + "..." },
+        "[WNBF S4] AES-GCM decryption succeeded"
+      );
+      break;
+    }
+  }
+  if (!decryptedText) {
+    logger.warn("[WNBF S4] all known keys failed \u2014 falling back to Playwright");
+    return extractViaPlaywright(embedUrl, "weneverbeenfree", skipData);
+  }
+  logger.info("[WNBF S5] parsing decrypted payload");
+  let parsed;
+  try {
+    parsed = JSON.parse(decryptedText);
+  } catch {
+    logger.error(
+      { snippet: decryptedText.slice(0, 100) },
+      "[WNBF S5] decrypted payload is not valid JSON \u2014 falling back to Playwright"
+    );
+    return extractViaPlaywright(embedUrl, "weneverbeenfree", skipData);
+  }
+  const rawSrc = parsed.sources;
+  const m3u8 = typeof rawSrc === "string" ? rawSrc : rawSrc?.[0]?.file ?? rawSrc?.[0]?.url ?? null;
+  if (!m3u8) {
+    logger.warn("[WNBF S5] no m3u8 in decrypted payload \u2014 falling back to Playwright");
+    return extractViaPlaywright(embedUrl, "weneverbeenfree", skipData);
+  }
+  return buildResult("weneverbeenfree", m3u8, parsed, skipData);
+}
+function buildResult(provider, m3u8, data, skipData) {
+  const tracksRaw = data.tracks ?? [];
+  const subtitles = tracksRaw.filter(
+    (t) => t.kind !== "thumbnails" && t.kind !== "preview" && (t.file ?? "").length > 0
+  ).map((t) => ({
+    lang: (t.label ?? "unknown").toLowerCase().replace(/\s+/g, "-"),
+    label: t.label ?? "Unknown",
+    url: t.file ?? ""
+  }));
+  const thumbnailTrack = tracksRaw.find(
+    (t) => t.kind === "thumbnails" || t.kind === "preview"
+  );
+  const thumbnails = thumbnailTrack?.file ?? null;
+  let intro = null;
+  let outro = null;
+  if (data.intro && (data.intro.start !== 0 || data.intro.end !== 0)) {
+    intro = { start: data.intro.start, end: data.intro.end };
+  } else if (skipData?.intro && (skipData.intro[0] !== 0 || skipData.intro[1] !== 0)) {
+    intro = { start: skipData.intro[0], end: skipData.intro[1] };
+  }
+  if (data.outro && (data.outro.start !== 0 || data.outro.end !== 0)) {
+    outro = { start: data.outro.start, end: data.outro.end };
+  } else if (skipData?.outro && (skipData.outro[0] !== 0 || skipData.outro[1] !== 0)) {
+    outro = { start: skipData.outro[0], end: skipData.outro[1] };
+  }
+  logger.info(
+    { m3u8: (m3u8 ?? "null").slice(0, 80), subtitles: subtitles.length, intro, outro },
+    "[WNBF S7] extraction complete"
+  );
+  return {
+    type: "direct",
+    provider,
+    m3u8,
+    subtitles,
+    thumbnails,
+    intro,
+    outro
+  };
 }
 function isWeneverbeenfreeHost(url) {
   try {
     const host = new URL(url).hostname;
-    return host.includes("weneverbeenfree") || host.includes("wnbf") || host.includes("myvidplay") || host.includes("animefever");
+    return host.includes("weneverbeenfree") || host.includes("wnbf");
   } catch {
     return false;
   }
 }
 
 // src/lib/anime/providers/dghg.ts
-import axios5 from "axios";
+import { execSync } from "child_process";
 var DOOD_HOSTS = [
   "playmogo.com",
   "myvidplay.com",
@@ -1219,6 +1411,7 @@ var DOOD_HOSTS = [
   "dood.sh",
   "dood.watch"
 ];
+var UA2 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function isPlaymogoHost(url) {
   try {
     const host = new URL(url).hostname;
@@ -1227,49 +1420,41 @@ function isPlaymogoHost(url) {
     return false;
   }
 }
-var UA2 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-async function followPassMd5(passMd5Url, referer) {
-  let location = null;
+function curlFetch(url, referer) {
+  const args = [
+    "-s",
+    "-L",
+    "-A",
+    UA2,
+    "-H",
+    "Accept: text/html,*/*",
+    "-H",
+    `Referer: ${referer || "https://aniwaves.ru/"}`,
+    "--max-redirs",
+    "5",
+    "--connect-timeout",
+    "15",
+    "--max-time",
+    "30",
+    url
+  ];
   try {
-    const r = await axios5.get(passMd5Url, {
-      timeout: 15e3,
-      headers: { "User-Agent": UA2, Referer: referer, Accept: "*/*" },
-      maxRedirects: 0,
-      validateStatus: (s) => s === 200 || s === 301 || s === 302
+    const result = execSync("curl " + args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" "), {
+      encoding: "utf8",
+      timeout: 35e3
     });
-    if (r.status === 200) {
-      const body = r.data?.trim();
-      if (body && (body.startsWith("http") || body.startsWith("REDIRECT"))) return body;
-    }
-    location = r.headers["location"] ?? null;
-  } catch {
+    return result.trim();
+  } catch (err) {
+    const e = err;
+    logger.warn({ url: url.slice(0, 80), error: e.message }, "curl fetch failed");
+    return "";
   }
-  if (location) {
-    try {
-      const r2 = await axios5.get(location, {
-        timeout: 15e3,
-        headers: { "User-Agent": UA2, Referer: referer, Accept: "*/*" },
-        maxRedirects: 5
-      });
-      return r2.data?.trim() || null;
-    } catch {
-      return location.startsWith("http") ? location : null;
-    }
-  }
-  return null;
 }
 async function extractDghg(embedUrl, skipData) {
   logger.info({ embedUrl: embedUrl.slice(0, 80) }, "[DGHG] starting extraction");
-  let html;
-  try {
-    const resp = await axios5.get(embedUrl, {
-      timeout: 15e3,
-      headers: { "User-Agent": UA2, Accept: "text/html,*/*", Referer: "https://aniwaves.ru/" },
-      maxRedirects: 5
-    });
-    html = resp.data;
-  } catch (err) {
-    logger.error({ error: err.message }, "[DGHG] Step 1 FAILED");
+  const html = curlFetch(embedUrl, "https://aniwaves.ru/");
+  if (!html) {
+    logger.error("[DGHG] Step 1 FAILED \u2014 could not fetch embed page");
     return null;
   }
   let passMd5Path = null;
@@ -1280,27 +1465,30 @@ async function extractDghg(embedUrl, skipData) {
   let token = null;
   if (passMd5Path) {
     const parts = passMd5Path.split("/");
-    if (parts.length >= 2) token = parts[1];
+    token = parts[parts.length - 1] || null;
   }
   if (!token) {
-    const tokenMatch = html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/) || html.match(/makePlay\(\)[^?]*\?token=([a-zA-Z0-9]+)/);
+    const tokenMatch = html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/);
     token = tokenMatch?.[1] ?? null;
   }
-  logger.debug({ passMd5Path: passMd5Path?.slice(0, 50), token: token?.slice(0, 20) }, "[DGHG] extracted creds");
+  logger.debug(
+    { passMd5Path: passMd5Path?.slice(0, 60), token: token?.slice(0, 20) },
+    "[DGHG] extracted creds"
+  );
   if (!passMd5Path) {
     logger.error("[DGHG] Step 2 FAILED \u2014 no pass_md5 path in HTML");
     return null;
   }
   const urlObj = new URL(embedUrl);
   const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
-  const cdnBaseUrl = await followPassMd5(passMd5Url, embedUrl);
-  if (!cdnBaseUrl) {
-    logger.error("[DGHG] Step 3 FAILED \u2014 no CDN URL");
+  const cdnBaseUrl = curlFetch(passMd5Url, embedUrl);
+  if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
+    logger.error("[DGHG] Step 3 FAILED \u2014 no CDN URL from pass_md5");
     return null;
   }
   const expiry = Date.now();
   const finalUrl = `${cdnBaseUrl}?token=${token}&expiry=${expiry}`;
-  logger.info({ finalUrl: finalUrl.slice(0, 80) }, "[DGHG] extraction SUCCESS");
+  logger.info({ finalUrl: finalUrl.slice(0, 100) }, "[DGHG] extraction SUCCESS");
   let intro = null;
   let outro = null;
   if (skipData?.intro?.[1] && skipData.intro[1] > 0) {
