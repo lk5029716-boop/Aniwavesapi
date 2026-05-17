@@ -3,10 +3,11 @@ import { execSync } from "child_process";
 
 const router: IRouter = Router();
 
-router.get("/health", (_req, res) => {
+router.get("/health", async (_req, res) => {
   let curlAvailable = false;
   let chromiumPath: string | null = null;
-  let playwrightAvailable = false;
+  let playwrightVersion: string | null = null;
+  let chromiumLaunchTest: string | null = null;
 
   try {
     execSync("which curl", { encoding: "utf8", timeout: 5000 });
@@ -25,12 +26,27 @@ router.get("/health", (_req, res) => {
     chromiumPath = null;
   }
 
-  // Check if playwright package is available
+  // Check playwright version
   try {
-    require.resolve("playwright");
-    playwrightAvailable = true;
+    const pw = await import("playwright");
+    playwrightVersion = pw?.chromium ? "available" : "unknown";
   } catch {
-    playwrightAvailable = false;
+    playwrightVersion = "not available";
+  }
+
+  // Test chromium launch (quick test)
+  if (chromiumPath) {
+    try {
+      const { chromium } = await import("playwright");
+      const browser = await chromium.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      });
+      await browser.close();
+      chromiumLaunchTest = "success";
+    } catch (e) {
+      chromiumLaunchTest = `failed: ${(e as Error).message.slice(0, 100)}`;
+    }
   }
 
   res.json({
@@ -40,8 +56,8 @@ router.get("/health", (_req, res) => {
     node: process.version,
     env: process.env.NODE_ENV || "development",
     chromium: chromiumPath || "not found",
-    playwright: playwrightAvailable,
-    playwrightChromiumEnv: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || "not set",
+    playwright: playwrightVersion,
+    chromiumLaunchTest,
   });
 });
 
