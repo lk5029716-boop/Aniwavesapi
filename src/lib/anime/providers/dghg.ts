@@ -102,7 +102,7 @@ async function fetchEmbedPage(embedUrl: string): Promise<{ html: string; debug: 
 export async function extractDghg(
   embedUrl: string,
   skipData?: { intro?: [number, number]; outro?: [number, number] }
-): Promise<StreamSource & { _dghgDebug?: Record<string, unknown> } | null> {
+): Promise<StreamSource | null> {
   const masterDebug: Record<string, unknown> = { embedUrl: embedUrl.slice(0, 100) };
   logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
 
@@ -200,7 +200,6 @@ export async function extractDghg(
     thumbnails: null,
     intro,
     outro,
-    _dghgDebug: masterDebug,
   };
 }
 
