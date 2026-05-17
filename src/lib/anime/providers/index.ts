@@ -25,7 +25,11 @@ export async function extractStream(
     lowerName.includes("myvidplay")
   ) {
     logger.info({ serverName }, "routing to DGHG/PlayMogo extractor");
-    return extractDghg(embedUrl, skipData);
+    const result = await extractDghg(embedUrl, skipData);
+    if (result.debug) {
+      logger.warn({ serverName, debug: result.debug }, "DGHG extraction failed");
+    }
+    return result.source;
   }
 
   // weneverbeenfree.com (BYFMS server on Aniwaves)
@@ -88,6 +92,10 @@ export async function extractStream(
 
   const wnbfResult = await extractWeneverbeenfree(embedUrl, skipData);
   if (wnbfResult?.m3u8) return wnbfResult;
+
+  // Try DGHG as last resort
+  const dghgResult = await extractDghg(embedUrl, skipData);
+  if (dghgResult.source?.m3u8) return dghgResult.source;
 
   logger.error({ serverName, embedUrl: embedUrl.slice(0, 80) }, "all extractors failed");
   return null;

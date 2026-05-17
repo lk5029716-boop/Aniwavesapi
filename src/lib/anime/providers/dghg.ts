@@ -32,8 +32,10 @@ function isCurlAvailable(): boolean {
   try {
     execSync("which curl", { encoding: "utf8", timeout: 5000 });
     curlAvailable = true;
+    logger.info("curl is available");
   } catch {
     curlAvailable = false;
+    logger.warn("curl NOT available, will use axios (may get 403 from Cloudflare)");
   }
   return curlAvailable;
 }
@@ -47,7 +49,7 @@ function isPlaymogoHost(url: string): boolean {
   }
 }
 
-function curlFetch(url: string, referer: string): string {
+function curlFetch(url: string, referer: string): { body: string; error: string | null } {
   try {
     const result = execFileSync("curl", [
       "-s", "-L",
@@ -66,107 +68,122 @@ function curlFetch(url: string, referer: string): string {
     const body = lines.slice(0, -1).join("\n");
 
     if (httpCode !== "200") {
-      logger.warn({ url: url.slice(0, 80), httpCode }, "curl non-200 response");
-      return "";
+      return { body: body.slice(0, 300), error: `HTTP ${httpCode}` };
     }
-    return body;
+    return { body, error: null };
   } catch (err) {
     const e = err as Error;
-    logger.warn({ url: url.slice(0, 80), error: e.message }, "curl fetch failed");
-    return "";
+    return { body: "", error: e.message };
   }
 }
 
-async function axiosFetch(url: string, referer: string): Promise<string> {
-  const resp = await axios.get(url, {
-    timeout: 15000,
-    headers: {
-      "User-Agent": UA,
-      Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9",
-      Referer: referer,
-    },
-    maxRedirects: 5,
-  });
-  return resp.data as string;
+async function axiosFetch(url: string, referer: string): Promise<{ body: string; error: string | null }> {
+  try {
+    const resp = await axios.get(url, {
+      timeout: 15000,
+      headers: {
+        "User-Agent": UA,
+        Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        Referer: referer,
+      },
+      maxRedirects: 5,
+    });
+    return { body: resp.data as string, error: null };
+  } catch (err) {
+    const e = err as Error & { response?: { status: number } };
+    return { body: "", error: `HTTP ${e.response?.status || 'unknown'}: ${e.message}` };
+  }
 }
 
-function fetchPage(url: string, referer: string): string {
-  if (isCurlAvailable()) {
-    return curlFetch(url, referer);
-  }
-  // Fallback: use axios (may get 403 on some hosts)
-  logger.warn("curl not available, falling back to axios (may get 403)");
-  return "";
+export interface DghgResult {
+  source: StreamSource | null;
+  debug: {
+    curlAvailable: boolean;
+    step: string;
+    detail: string;
+    embedUrl: string;
+  } | null;
 }
 
 export async function extractDghg(
   embedUrl: string,
   skipData?: { intro?: [number, number]; outro?: [number, number] }
-): Promise<StreamSource | null> {
-  logger.info({ embedUrl: embedUrl.slice(0, 100), curl: isCurlAvailable() }, "[DGHG] starting extraction");
+): Promise<DghgResult> {
+  const curl = isCurlAvailable();
+  logger.info({ embedUrl: embedUrl.slice(0, 100), curl }, "[DGHG] starting extraction");
 
   // Step 1: Fetch embed page
   let html: string;
-  if (isCurlAvailable()) {
-    html = curlFetch(embedUrl, "https://aniwaves.ru/");
+  let step1Error: string | null = null;
+
+  if (curl) {
+    const r = curlFetch(embedUrl, "https://aniwaves.ru/");
+    html = r.body;
+    step1Error = r.error;
   } else {
-    html = await axiosFetch(embedUrl, "https://aniwaves.ru/");
+    const r = await axiosFetch(embedUrl, "https://aniwaves.ru/");
+    html = r.body;
+    step1Error = r.error;
   }
 
-  if (!html) {
-    logger.error("[DGHG] Step 1 FAILED — empty response");
-    return null;
+  if (!html || step1Error) {
+    logger.error({ error: step1Error }, "[DGHG] Step 1 FAILED");
+    return {
+      source: null,
+      debug: { curlAvailable: curl, step: "fetch_embed", detail: step1Error || "empty response", embedUrl },
+    };
   }
 
-  // Step 2: Extract pass_md5 path from HTML
-  // Pattern: $.get('/pass_md5/{file_id}-{nums}-{nums}-{nums}-{hash}/{token}', function(data)
+  // Step 2: Extract pass_md5 path
   let passMd5Path: string | null = null;
   const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
-  if (passMd5Match) {
-    passMd5Path = passMd5Match[1];
-  }
+  if (passMd5Match) passMd5Path = passMd5Match[1];
 
-  // Extract token from pass_md5 path (last /-separated segment)
   let token: string | null = null;
   if (passMd5Path) {
     const parts = passMd5Path.split("/");
     token = parts[parts.length - 1] || null;
   }
-
-  // Fallback: extract token from cookieIndex='{token}'
   if (!token) {
     const tokenMatch = html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/);
     token = tokenMatch?.[1] ?? null;
   }
 
-  logger.debug({ passMd5Path: passMd5Path?.slice(0, 100), token }, "[DGHG] extracted creds");
-
   if (!passMd5Path || !token) {
-    logger.error({ hasPassMd5: !!passMd5Path, hasToken: !!token }, "[DGHG] Step 2 FAILED");
-    return null;
+    return {
+      source: null,
+      debug: { curlAvailable: curl, step: "extract_creds", detail: `passMd5=${!!passMd5Path}, token=${!!token}`, embedUrl },
+    };
   }
 
-  // Step 3: Call pass_md5 to get CDN URL
+  // Step 3: Call pass_md5
   const urlObj = new URL(embedUrl);
   const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
 
   let cdnBaseUrl: string;
-  if (isCurlAvailable()) {
-    cdnBaseUrl = curlFetch(passMd5Url, embedUrl);
+  let step3Error: string | null = null;
+
+  if (curl) {
+    const r = curlFetch(passMd5Url, embedUrl);
+    cdnBaseUrl = r.body;
+    step3Error = r.error;
   } else {
-    cdnBaseUrl = await axiosFetch(passMd5Url, embedUrl);
+    const r = await axiosFetch(passMd5Url, embedUrl);
+    cdnBaseUrl = r.body;
+    step3Error = r.error;
   }
 
-  if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
-    logger.error({ cdnBase: cdnBaseUrl?.slice(0, 100) }, "[DGHG] Step 3 FAILED");
-    return null;
+  if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http") || step3Error) {
+    return {
+      source: null,
+      debug: { curlAvailable: curl, step: "fetch_pass_md5", detail: step3Error || `invalid: ${cdnBaseUrl?.slice(0, 50)}`, embedUrl },
+    };
   }
 
-  // Step 4: Build final video URL
+  // Step 4: Build final URL
   const expiry = Date.now();
   const finalUrl = `${cdnBaseUrl}?token=${token}&expiry=${expiry}`;
-
   logger.info({ finalUrl: finalUrl.slice(0, 120) }, "[DGHG] extraction SUCCESS");
 
   let intro: SkipTime | null = null;
@@ -179,13 +196,16 @@ export async function extractDghg(
   }
 
   return {
-    type: "direct",
-    provider: "dghg",
-    m3u8: finalUrl,
-    subtitles: [],
-    thumbnails: null,
-    intro,
-    outro,
+    source: {
+      type: "direct",
+      provider: "dghg",
+      m3u8: finalUrl,
+      subtitles: [],
+      thumbnails: null,
+      intro,
+      outro,
+    },
+    debug: null,
   };
 }
 

@@ -1419,8 +1419,10 @@ function isCurlAvailable() {
   try {
     execSync("which curl", { encoding: "utf8", timeout: 5e3 });
     curlAvailable = true;
+    logger.info("curl is available");
   } catch {
     curlAvailable = false;
+    logger.warn("curl NOT available, will use axios (may get 403 from Cloudflare)");
   }
   return curlAvailable;
 }
@@ -1457,46 +1459,56 @@ function curlFetch(url, referer) {
     const httpCode = lines[lines.length - 1];
     const body = lines.slice(0, -1).join("\n");
     if (httpCode !== "200") {
-      logger.warn({ url: url.slice(0, 80), httpCode }, "curl non-200 response");
-      return "";
+      return { body: body.slice(0, 300), error: `HTTP ${httpCode}` };
     }
-    return body;
+    return { body, error: null };
   } catch (err) {
     const e = err;
-    logger.warn({ url: url.slice(0, 80), error: e.message }, "curl fetch failed");
-    return "";
+    return { body: "", error: e.message };
   }
 }
 async function axiosFetch(url, referer) {
-  const resp = await axios6.get(url, {
-    timeout: 15e3,
-    headers: {
-      "User-Agent": UA2,
-      Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9",
-      Referer: referer
-    },
-    maxRedirects: 5
-  });
-  return resp.data;
+  try {
+    const resp = await axios6.get(url, {
+      timeout: 15e3,
+      headers: {
+        "User-Agent": UA2,
+        Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        Referer: referer
+      },
+      maxRedirects: 5
+    });
+    return { body: resp.data, error: null };
+  } catch (err) {
+    const e = err;
+    return { body: "", error: `HTTP ${e.response?.status || "unknown"}: ${e.message}` };
+  }
 }
 async function extractDghg(embedUrl, skipData) {
-  logger.info({ embedUrl: embedUrl.slice(0, 100), curl: isCurlAvailable() }, "[DGHG] starting extraction");
+  const curl = isCurlAvailable();
+  logger.info({ embedUrl: embedUrl.slice(0, 100), curl }, "[DGHG] starting extraction");
   let html;
-  if (isCurlAvailable()) {
-    html = curlFetch(embedUrl, "https://aniwaves.ru/");
+  let step1Error = null;
+  if (curl) {
+    const r = curlFetch(embedUrl, "https://aniwaves.ru/");
+    html = r.body;
+    step1Error = r.error;
   } else {
-    html = await axiosFetch(embedUrl, "https://aniwaves.ru/");
+    const r = await axiosFetch(embedUrl, "https://aniwaves.ru/");
+    html = r.body;
+    step1Error = r.error;
   }
-  if (!html) {
-    logger.error("[DGHG] Step 1 FAILED \u2014 empty response");
-    return null;
+  if (!html || step1Error) {
+    logger.error({ error: step1Error }, "[DGHG] Step 1 FAILED");
+    return {
+      source: null,
+      debug: { curlAvailable: curl, step: "fetch_embed", detail: step1Error || "empty response", embedUrl }
+    };
   }
   let passMd5Path = null;
   const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
-  if (passMd5Match) {
-    passMd5Path = passMd5Match[1];
-  }
+  if (passMd5Match) passMd5Path = passMd5Match[1];
   let token = null;
   if (passMd5Path) {
     const parts = passMd5Path.split("/");
@@ -1506,22 +1518,30 @@ async function extractDghg(embedUrl, skipData) {
     const tokenMatch = html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/);
     token = tokenMatch?.[1] ?? null;
   }
-  logger.debug({ passMd5Path: passMd5Path?.slice(0, 100), token }, "[DGHG] extracted creds");
   if (!passMd5Path || !token) {
-    logger.error({ hasPassMd5: !!passMd5Path, hasToken: !!token }, "[DGHG] Step 2 FAILED");
-    return null;
+    return {
+      source: null,
+      debug: { curlAvailable: curl, step: "extract_creds", detail: `passMd5=${!!passMd5Path}, token=${!!token}`, embedUrl }
+    };
   }
   const urlObj = new URL(embedUrl);
   const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
   let cdnBaseUrl;
-  if (isCurlAvailable()) {
-    cdnBaseUrl = curlFetch(passMd5Url, embedUrl);
+  let step3Error = null;
+  if (curl) {
+    const r = curlFetch(passMd5Url, embedUrl);
+    cdnBaseUrl = r.body;
+    step3Error = r.error;
   } else {
-    cdnBaseUrl = await axiosFetch(passMd5Url, embedUrl);
+    const r = await axiosFetch(passMd5Url, embedUrl);
+    cdnBaseUrl = r.body;
+    step3Error = r.error;
   }
-  if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
-    logger.error({ cdnBase: cdnBaseUrl?.slice(0, 100) }, "[DGHG] Step 3 FAILED");
-    return null;
+  if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http") || step3Error) {
+    return {
+      source: null,
+      debug: { curlAvailable: curl, step: "fetch_pass_md5", detail: step3Error || `invalid: ${cdnBaseUrl?.slice(0, 50)}`, embedUrl }
+    };
   }
   const expiry = Date.now();
   const finalUrl = `${cdnBaseUrl}?token=${token}&expiry=${expiry}`;
@@ -1535,13 +1555,16 @@ async function extractDghg(embedUrl, skipData) {
     outro = { start: skipData.outro[0], end: skipData.outro[1] };
   }
   return {
-    type: "direct",
-    provider: "dghg",
-    m3u8: finalUrl,
-    subtitles: [],
-    thumbnails: null,
-    intro,
-    outro
+    source: {
+      type: "direct",
+      provider: "dghg",
+      m3u8: finalUrl,
+      subtitles: [],
+      thumbnails: null,
+      intro,
+      outro
+    },
+    debug: null
   };
 }
 
@@ -1554,7 +1577,11 @@ async function extractStream(embedUrl, serverName, skipData) {
   );
   if (isPlaymogoHost(embedUrl) || lowerName.includes("dghg") || lowerName.includes("myvidplay")) {
     logger.info({ serverName }, "routing to DGHG/PlayMogo extractor");
-    return extractDghg(embedUrl, skipData);
+    const result = await extractDghg(embedUrl, skipData);
+    if (result.debug) {
+      logger.warn({ serverName, debug: result.debug }, "DGHG extraction failed");
+    }
+    return result.source;
   }
   if (isWeneverbeenfreeHost(embedUrl) || lowerName.includes("byfms") || lowerName.includes("weneverbeenfree")) {
     logger.info({ serverName }, "routing to WeneverBeenFree extractor");
@@ -1586,6 +1613,8 @@ async function extractStream(embedUrl, serverName, skipData) {
   if (megacloudResult?.m3u8) return megacloudResult;
   const wnbfResult = await extractWeneverbeenfree(embedUrl, skipData);
   if (wnbfResult?.m3u8) return wnbfResult;
+  const dghgResult = await extractDghg(embedUrl, skipData);
+  if (dghgResult.source?.m3u8) return dghgResult.source;
   logger.error({ serverName, embedUrl: embedUrl.slice(0, 80) }, "all extractors failed");
   return null;
 }
@@ -1687,10 +1716,11 @@ router2.get("/stream", async (req, res) => {
       res.status(502).json({ error: `Could not resolve embed URL for server "${serverName}"` });
       return;
     }
-    const stream = await extractStream(sourcesResult.url, targetServer.name, {
+    const streamResult = await extractStream(sourcesResult.url, targetServer.name, {
       intro: sourcesResult.skip_data?.intro,
       outro: sourcesResult.skip_data?.outro
     });
+    const stream = streamResult;
     if (stream?.m3u8) {
       req.log.info({ serverName: targetServer.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
       res.json({ ...stream, _server: targetServer.name });

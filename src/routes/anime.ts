@@ -161,10 +161,12 @@ router.get("/stream", async (req, res): Promise<void> => {
       return;
     }
 
-    const stream = await extractStream(sourcesResult.url, targetServer.name, {
+    const streamResult = await extractStream(sourcesResult.url, targetServer.name, {
       intro: sourcesResult.skip_data?.intro,
       outro: sourcesResult.skip_data?.outro,
     });
+
+    const stream = streamResult;
 
     if (stream?.m3u8) {
       req.log.info({ serverName: targetServer.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
