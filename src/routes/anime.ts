@@ -11,7 +11,9 @@ import { extractStream } from "../lib/anime/providers/index.js";
 
 const router: IRouter = Router();
 
-/** GET /api/search?q=naruto */
+/**
+ * GET /api/search?q=naruto
+ */
 router.get("/search", async (req, res): Promise<void> => {
   const q = Array.isArray(req.query["q"]) ? req.query["q"][0] : req.query["q"];
   if (!q || typeof q !== "string") {
@@ -22,9 +24,13 @@ router.get("/search", async (req, res): Promise<void> => {
   res.json({ results });
 });
 
-/** GET /api/details?id=naruto-76396 */
+/**
+ * GET /api/details?id=naruto-76396
+ */
 router.get("/details", async (req, res): Promise<void> => {
-  const id = Array.isArray(req.query["id"]) ? req.query["id"][0] : req.query["id"];
+  const id = Array.isArray(req.query["id"])
+    ? req.query["id"][0]
+    : req.query["id"];
   if (!id || typeof id !== "string") {
     res.status(400).json({ error: "Missing query param: id" });
     return;
@@ -33,9 +39,13 @@ router.get("/details", async (req, res): Promise<void> => {
   res.json(details);
 });
 
-/** GET /api/episodes?id=naruto-76396 */
+/**
+ * GET /api/episodes?id=naruto-76396
+ */
 router.get("/episodes", async (req, res): Promise<void> => {
-  const id = Array.isArray(req.query["id"]) ? req.query["id"][0] : req.query["id"];
+  const id = Array.isArray(req.query["id"])
+    ? req.query["id"][0]
+    : req.query["id"];
   if (!id || typeof id !== "string") {
     res.status(400).json({ error: "Missing query param: id" });
     return;
@@ -44,11 +54,19 @@ router.get("/episodes", async (req, res): Promise<void> => {
   res.json({ episodes });
 });
 
-/** GET /api/servers?id=naruto-76396&ep=1&type=sub */
+/**
+ * GET /api/servers?id=naruto-76396&ep=1&type=sub
+ */
 router.get("/servers", async (req, res): Promise<void> => {
-  const id = Array.isArray(req.query["id"]) ? req.query["id"][0] : req.query["id"];
-  const epRaw = Array.isArray(req.query["ep"]) ? req.query["ep"][0] : req.query["ep"];
-  const typeRaw = Array.isArray(req.query["type"]) ? req.query["type"][0] : req.query["type"];
+  const id = Array.isArray(req.query["id"])
+    ? req.query["id"][0]
+    : req.query["id"];
+  const epRaw = Array.isArray(req.query["ep"])
+    ? req.query["ep"][0]
+    : req.query["ep"];
+  const typeRaw = Array.isArray(req.query["type"])
+    ? req.query["type"][0]
+    : req.query["type"];
 
   if (!id || typeof id !== "string") {
     res.status(400).json({ error: "Missing query param: id" });
@@ -65,7 +83,6 @@ router.get("/servers", async (req, res): Promise<void> => {
   }
   const type: "sub" | "dub" | "raw" =
     typeRaw === "dub" ? "dub" : typeRaw === "raw" ? "raw" : "sub";
-
   const servers = await getServers(id, ep, type);
   res.json({ servers });
 });
@@ -77,9 +94,15 @@ router.get("/servers", async (req, res): Promise<void> => {
  * When no server is given, tries all in order.
  */
 router.get("/stream", async (req, res): Promise<void> => {
-  const id = Array.isArray(req.query["id"]) ? req.query["id"][0] : req.query["id"];
-  const epRaw = Array.isArray(req.query["ep"]) ? req.query["ep"][0] : req.query["ep"];
-  const typeRaw = Array.isArray(req.query["type"]) ? req.query["type"][0] : req.query["type"];
+  const id = Array.isArray(req.query["id"])
+    ? req.query["id"][0]
+    : req.query["id"];
+  const epRaw = Array.isArray(req.query["ep"])
+    ? req.query["ep"][0]
+    : req.query["ep"];
+  const typeRaw = Array.isArray(req.query["type"])
+    ? req.query["type"][0]
+    : req.query["type"];
   const serverParam = Array.isArray(req.query["server"])
     ? req.query["server"][0]
     : req.query["server"];
@@ -111,7 +134,9 @@ router.get("/stream", async (req, res): Promise<void> => {
     return;
   }
 
-  // 2. If a specific server was requested, only try that server
+  req.log.debug({ servers: servers.map((s) => s.name) }, "available servers");
+
+  // 2. If a specific server was requested, only try that server (no fallback)
   if (serverName) {
     const targetServer = servers.find((s) =>
       s.name.toLowerCase().includes(serverName.toLowerCase())
@@ -125,6 +150,11 @@ router.get("/stream", async (req, res): Promise<void> => {
       return;
     }
 
+    req.log.info(
+      { serverName: targetServer.name, linkId: targetServer.id.slice(0, 30) },
+      "trying specific server (no fallback)"
+    );
+
     const sourcesResult = await getEmbedUrl(targetServer.id, id);
     if (!sourcesResult?.url) {
       res.status(502).json({ error: `Could not resolve embed URL for server "${serverName}"` });
@@ -137,6 +167,7 @@ router.get("/stream", async (req, res): Promise<void> => {
     });
 
     if (stream?.m3u8) {
+      req.log.info({ serverName: targetServer.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
       res.json({ ...stream, _server: targetServer.name });
       return;
     }
@@ -148,12 +179,18 @@ router.get("/stream", async (req, res): Promise<void> => {
     return;
   }
 
-  // 3. No specific server — try all in order
+  // 3. No specific server — try all in order until one succeeds
   const failedServers: string[] = [];
 
   for (const server of servers) {
+    req.log.info(
+      { serverName: server.name, linkId: server.id.slice(0, 30) },
+      "trying server"
+    );
+
     const sourcesResult = await getEmbedUrl(server.id, id);
     if (!sourcesResult?.url) {
+      req.log.warn({ serverName: server.name }, "could not resolve embed URL — skipping");
       failedServers.push(server.name);
       continue;
     }
@@ -164,15 +201,20 @@ router.get("/stream", async (req, res): Promise<void> => {
     });
 
     if (stream?.m3u8) {
+      req.log.info({ serverName: server.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
       res.json({ ...stream, _server: server.name, _failedServers: failedServers });
       return;
     }
 
+    req.log.warn(
+      { serverName: server.name },
+      "extraction failed — trying next server"
+    );
     failedServers.push(server.name);
   }
 
   res.status(502).json({
-    error: "All servers failed",
+    error: "All servers failed — check logs for stage-by-stage detail",
     failedServers,
   });
 });
@@ -182,10 +224,11 @@ router.get("/stream", async (req, res): Promise<void> => {
  *
  * Proxies a stream URL (m3u8, ts segment, vtt, etc.) through the server
  * with the correct Referer / Origin headers that the CDN requires.
- * Also rewrites m3u8 playlists to proxy all segments/sub-resources.
  */
 router.get("/proxy", async (req, res): Promise<void> => {
-  const urlParam = Array.isArray(req.query["url"]) ? req.query["url"][0] : req.query["url"];
+  const urlParam = Array.isArray(req.query["url"])
+    ? req.query["url"][0]
+    : req.query["url"];
   const refererParam = Array.isArray(req.query["referer"])
     ? req.query["referer"][0]
     : req.query["referer"];
@@ -205,8 +248,20 @@ router.get("/proxy", async (req, res): Promise<void> => {
 
   let referer = typeof refererParam === "string" ? refererParam : null;
   if (!referer) {
-    referer = `https://${targetUrl.hostname}/`;
+    const host = targetUrl.hostname;
+    if (host.includes("echovideo") || host.includes("echo")) {
+      referer = "https://play.echovideo.ru/";
+    } else if (host.includes("weneverbeenfree") || host.includes("owphbf") || host.includes("sprintcdn")) {
+      referer = "https://weneverbeenfree.com/";
+    } else {
+      referer = "https://play.echovideo.ru/";
+    }
   }
+
+  req.log.info(
+    { url: urlParam.slice(0, 80), referer },
+    "proxying stream URL"
+  );
 
   try {
     const upstream = await axios.get(urlParam, {
@@ -238,16 +293,19 @@ router.get("/proxy", async (req, res): Promise<void> => {
       upstream.data.on("data", (chunk: Buffer) => chunks.push(chunk));
       upstream.data.on("end", () => {
         const body = Buffer.concat(chunks).toString("utf8");
-        const encodedReferer = encodeURIComponent(referer ?? "");
+        const encodedReferer = encodeURIComponent(referer ?? "https://play.echovideo.ru/");
+
+        // Compute base URL for resolving relative paths
         const baseUrl = urlParam.substring(0, urlParam.lastIndexOf("/") + 1);
 
         const rewritten = body
           .split("\n")
           .map((line) => {
             const trimmed = line.trim();
+
             if (!trimmed) return line;
 
-            // Rewrite URI="..." in tag lines
+            // Tag lines with URI="..." (e.g. #EXT-X-KEY) — rewrite the URI value
             if (trimmed.startsWith("#") && trimmed.includes('URI="')) {
               return trimmed.replace(/URI="([^"]+)"/g, (_m, uri: string) => {
                 const abs = uri.startsWith("http") ? uri : baseUrl + uri;
@@ -255,9 +313,10 @@ router.get("/proxy", async (req, res): Promise<void> => {
               });
             }
 
+            // Other tag lines — pass through unchanged
             if (trimmed.startsWith("#")) return line;
 
-            // Rewrite segment / sub-playlist URLs
+            // Segment / sub-playlist URL (relative or absolute) — proxy it
             const abs = trimmed.startsWith("http") ? trimmed : baseUrl + trimmed;
             return `/api/proxy?url=${encodeURIComponent(abs)}&referer=${encodedReferer}`;
           })
@@ -275,6 +334,10 @@ router.get("/proxy", async (req, res): Promise<void> => {
     }
   } catch (err) {
     const e = err as Error & { response?: { status: number } };
+    req.log.error(
+      { url: urlParam.slice(0, 80), error: e.message, status: e.response?.status },
+      "proxy request failed"
+    );
     if (!res.headersSent) {
       res.status(502).json({
         error: "Proxy failed",

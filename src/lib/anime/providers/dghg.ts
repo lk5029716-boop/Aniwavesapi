@@ -1,24 +1,69 @@
 /**
- * DGHG / PlayMogo / DoodStream extractor.
+ * DGHG / PlayMogo / DoodStream provider extractor.
  *
- * DGHG embeds use playmogo.com (DoodStream-based CDN).
- * Returns a direct MP4 URL — no Playwright needed.
- *
+ * DGHG embeds use myvidplay.com (DoodStream-based CDN).
  * Flow:
- * 1. GET /e/{videoCode} → extract file_id and token from HTML
- * 2. GET /pass_md5/{file_id}-{random}/{token} → get CDN base URL
- * 3. Append ?token={token}&expiry={timestamp} → final direct MP4 URL
+ *   1. GET /e/{videoCode} → extract pass_md5 path from HTML
+ *   2. GET /pass_md5/{path} → get CDN base URL (follows redirects)
+ *   3. Append ?token={token}&expiry={timestamp} → final direct MP4 URL
  */
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { logger } from "../../logger.js";
 import type { StreamSource, SkipTime } from "../types.js";
 
-const PLAYMOGO_HOSTS = [
+const DOOD_HOSTS = [
   "playmogo.com", "myvidplay.com", "doodstream.com", "dood.la",
   "dood.to", "dood.so", "dood.ws", "dood.pm", "dood.wf", "dood.re",
   "dood.yt", "dood.cx", "dood.sh", "dood.watch",
 ];
+
+function isPlaymogoHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return DOOD_HOSTS.some((h) => host.includes(h));
+  } catch {
+    return false;
+  }
+}
+
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+async function followPassMd5(passMd5Url: string, referer: string): Promise<string | null> {
+  // Step 1: Hit pass_md5 — may get 301/302 redirect or direct CDN URL
+  let location: string | null = null;
+  try {
+    const r = await axios.get(passMd5Url, {
+      timeout: 15000,
+      headers: { "User-Agent": UA, Referer: referer, Accept: "*/*" },
+      maxRedirects: 0,
+      validateStatus: (s) => s === 200 || s === 301 || s === 302,
+    });
+    if (r.status === 200) {
+      const body = (r.data as string)?.trim();
+      if (body && (body.startsWith("http") || body.startsWith("REDIRECT"))) return body;
+    }
+    location = r.headers["location"] ?? null;
+  } catch {
+    // ignore
+  }
+
+  // Step 2: Follow redirect if we got one
+  if (location) {
+    try {
+      const r2 = await axios.get(location, {
+        timeout: 15000,
+        headers: { "User-Agent": UA, Referer: referer, Accept: "*/*" },
+        maxRedirects: 5,
+      });
+      return (r2.data as string)?.trim() || null;
+    } catch {
+      return location.startsWith("http") ? location : null;
+    }
+  }
+
+  return null;
+}
 
 export async function extractDghg(
   embedUrl: string,
@@ -26,19 +71,12 @@ export async function extractDghg(
 ): Promise<StreamSource | null> {
   logger.info({ embedUrl: embedUrl.slice(0, 80) }, "[DGHG] starting extraction");
 
-  const commonHeaders = {
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    Accept: "text/html,*/*",
-    Referer: "https://aniwaves.ru/",
-  };
-
-  // Step 1: Fetch embed page
+  // Step 1: Fetch embed page to get pass_md5 path and token
   let html: string;
   try {
     const resp = await axios.get(embedUrl, {
       timeout: 15000,
-      headers: commonHeaders,
+      headers: { "User-Agent": UA, Accept: "text/html,*/*", Referer: "https://aniwaves.ru/" },
       maxRedirects: 5,
     });
     html = resp.data as string;
@@ -47,74 +85,39 @@ export async function extractDghg(
     return null;
   }
 
-  // Step 2: Extract file_id and token
-  const fileIdMatch = html.match(/file_id['"]\s*,\s*['"]([^'"]+)['"]/);
-  const fileId = fileIdMatch?.[1] ?? null;
-
-  const tokenMatch =
-    html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/) ||
-    html.match(/pass_md5\/[^"]+\/([^"'\\/]+)['"]?/) ||
-    html.match(/\?token=([a-zA-Z0-9]+)/);
-  let token = tokenMatch?.[1] ?? null;
-
-  const passMd5Match = html.match(
-    /\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]/
-  );
+  // Step 2: Extract pass_md5 path from $.get('/pass_md5/...') in HTML
   let passMd5Path: string | null = null;
+  const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
   if (passMd5Match) {
     passMd5Path = passMd5Match[1];
-    if (!token) {
-      const pathParts = passMd5Path.split("/");
-      if (pathParts.length >= 2) token = pathParts[1] || null;
-    }
   }
 
-  if (!fileId && !passMd5Path) {
-    logger.error("[DGHG] Step 2 FAILED — no file_id or pass_md5 path");
+  // Also try to extract token from pass_md5 path
+  let token: string | null = null;
+  if (passMd5Path) {
+    const parts = passMd5Path.split("/");
+    if (parts.length >= 2) token = parts[1];
+  }
+
+  // Fallback: extract token from cookieIndex or makePlay
+  if (!token) {
+    const tokenMatch = html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/)
+      || html.match(/makePlay\(\)[^?]*\?token=([a-zA-Z0-9]+)/);
+    token = tokenMatch?.[1] ?? null;
+  }
+
+  logger.debug({ passMd5Path: passMd5Path?.slice(0, 50), token: token?.slice(0, 20) }, "[DGHG] extracted creds");
+
+  if (!passMd5Path) {
+    logger.error("[DGHG] Step 2 FAILED — no pass_md5 path in HTML");
     return null;
   }
 
-  // Step 3: Call /pass_md5 to get CDN URL
+  // Step 3: Call pass_md5 to get CDN URL
   const urlObj = new URL(embedUrl);
-  const host = urlObj.hostname;
-  let cdnBaseUrl: string | null = null;
+  const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
 
-  if (passMd5Path) {
-    try {
-      const passMd5Url = `https://${host}/pass_md5/${passMd5Path}`;
-      const resp = await axios.get(passMd5Url, {
-        timeout: 15000,
-        headers: { ...commonHeaders, Referer: embedUrl },
-        maxRedirects: 5,
-      });
-      cdnBaseUrl = (resp.data as string)?.trim() || null;
-    } catch (err) {
-      const e = err as Error & { response?: { data?: string } };
-      if (e.response?.data) cdnBaseUrl = (e.response.data as string)?.trim() || null;
-    }
-  }
-
-  if (!cdnBaseUrl && fileId && token) {
-    const randomSuffix =
-      Math.random().toString(36).substring(2, 15) +
-      Math.random().toString(36).substring(2, 15);
-    const passMd5Path2 = `${fileId}-${randomSuffix}/${token}`;
-
-    try {
-      const passMd5Url = `https://${host}/pass_md5/${passMd5Path2}`;
-      const resp = await axios.get(passMd5Url, {
-        timeout: 15000,
-        headers: { ...commonHeaders, Referer: embedUrl },
-        maxRedirects: 0,
-        validateStatus: (s) => s === 200 || s === 301 || s === 302,
-      });
-      cdnBaseUrl = (resp.data as string)?.trim() || null;
-    } catch (err) {
-      const e = err as Error & { response?: { data?: string } };
-      if (e.response?.data) cdnBaseUrl = (e.response.data as string)?.trim() || null;
-    }
-  }
-
+  const cdnBaseUrl = await followPassMd5(passMd5Url, embedUrl);
   if (!cdnBaseUrl) {
     logger.error("[DGHG] Step 3 FAILED — no CDN URL");
     return null;
@@ -124,7 +127,8 @@ export async function extractDghg(
   const expiry = Date.now();
   const finalUrl = `${cdnBaseUrl}?token=${token}&expiry=${expiry}`;
 
-  // Step 5: Build StreamSource
+  logger.info({ finalUrl: finalUrl.slice(0, 80) }, "[DGHG] extraction SUCCESS");
+
   let intro: SkipTime | null = null;
   let outro: SkipTime | null = null;
   if (skipData?.intro?.[1] && skipData.intro[1] > 0) {
@@ -133,8 +137,6 @@ export async function extractDghg(
   if (skipData?.outro?.[1] && skipData.outro[1] > 0) {
     outro = { start: skipData.outro[0], end: skipData.outro[1] };
   }
-
-  logger.info("[DGHG] extraction complete — SUCCESS");
 
   return {
     type: "direct",
@@ -147,11 +149,4 @@ export async function extractDghg(
   };
 }
 
-export function isDghgHost(url: string): boolean {
-  try {
-    const host = new URL(url).hostname;
-    return PLAYMOGO_HOSTS.some((h) => host.includes(h));
-  } catch {
-    return false;
-  }
-}
+export { isPlaymogoHost };

@@ -3,7 +3,10 @@ export interface AnimeSearchResult {
   title: string;
   poster: string;
   type: string;
-  episodes: { sub: number; dub: number };
+  episodes: {
+    sub: number;
+    dub: number;
+  };
 }
 
 export interface AnimeDetails {
@@ -15,7 +18,11 @@ export interface AnimeDetails {
   status: string;
   aired: string;
   genres: string[];
-  episodes: { sub: number; dub: number; total: number };
+  episodes: {
+    sub: number;
+    dub: number;
+    total: number;
+  };
 }
 
 export interface Episode {

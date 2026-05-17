@@ -18,11 +18,29 @@ var health_default = router;
 
 // src/routes/anime.ts
 import { Router as Router2 } from "express";
-import axios4 from "axios";
+import axios6 from "axios";
 
 // src/lib/anime/scraper.ts
 import axios from "axios";
 import * as cheerio from "cheerio";
+
+// src/lib/logger.ts
+import pino from "pino";
+var isProduction = process.env.NODE_ENV === "production";
+var logger = pino({
+  level: process.env.LOG_LEVEL ?? "info",
+  redact: [
+    "req.headers.authorization",
+    "req.headers.cookie",
+    "res.headers['set-cookie']"
+  ],
+  ...isProduction ? {} : {
+    transport: {
+      target: "pino-pretty",
+      options: { colorize: true }
+    }
+  }
+});
 
 // src/lib/anime/cache.ts
 import NodeCache from "node-cache";
@@ -30,8 +48,8 @@ var cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 function cacheGet(key) {
   return cache.get(key);
 }
-function cacheSet(key, value, ttl) {
-  cache.set(key, value, ttl ?? 300);
+function cacheSet(key, value, ttl = 300) {
+  cache.set(key, value, ttl);
 }
 
 // src/lib/anime/scraper.ts
@@ -58,13 +76,20 @@ var ajaxClient = axios.create({
 async function searchAnime(q) {
   const cacheKey = `search:${q}`;
   const cached = cacheGet(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    logger.debug({ q }, "search cache hit");
+    return cached;
+  }
+  logger.info({ q }, "searching anime via /ajax/anime/search");
   const resp = await ajaxClient.get("/ajax/anime/search", {
     params: { keyword: q }
   });
   const data = resp.data;
   const html = typeof data.result === "string" ? data.result : data.result?.html ?? "";
-  if (!html) return [];
+  if (!html) {
+    logger.warn({ q, status: data.status }, "search returned no HTML");
+    return [];
+  }
   const $ = cheerio.load(html);
   const results = [];
   $("a.item").each((_, el) => {
@@ -80,6 +105,7 @@ async function searchAnime(q) {
     }
   });
   cacheSet(cacheKey, results, 300);
+  logger.info({ q, count: results.length }, "search complete");
   return results;
 }
 async function getNumericId(animeId) {
@@ -89,13 +115,19 @@ async function getNumericId(animeId) {
   const resp = await client.get(`/watch/${animeId}`);
   const $ = cheerio.load(resp.data);
   const numericId = $("[data-id]").first().attr("data-id") ?? null;
-  if (numericId) cacheSet(cacheKey, numericId, 86400);
+  if (numericId) {
+    cacheSet(cacheKey, numericId, 86400);
+  }
   return numericId;
 }
 async function getAnimeDetails(id) {
   const cacheKey = `details:${id}`;
   const cached = cacheGet(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    logger.debug({ id }, "details cache hit");
+    return cached;
+  }
+  logger.info({ id }, "fetching anime details from /watch/:id");
   const resp = await client.get(`/watch/${id}`);
   const $ = cheerio.load(resp.data);
   const title = $("h1.title.d-title").text().trim() || $("h1.film-name").text().trim() || $("h1").first().text().trim() || id;
@@ -141,6 +173,20 @@ async function getAnimeDetails(id) {
   if (epMatch) {
     totalCount = parseInt(epMatch[0] ?? "0", 10) || totalCount;
   }
+  if (!totalCount) {
+    const jsonLdText = $('script[type="application/ld+json"]').text();
+    if (jsonLdText) {
+      try {
+        const jsonLd = JSON.parse(jsonLdText);
+        const graph = jsonLd["@graph"] ?? [];
+        for (const node of graph) {
+          if (node.numberOfEpisodes) totalCount = node.numberOfEpisodes;
+        }
+        if (!totalCount && jsonLd.numberOfEpisodes) totalCount = jsonLd.numberOfEpisodes;
+      } catch {
+      }
+    }
+  }
   const mainType = $("span.wa_type").first().text().trim();
   const details = {
     id,
@@ -158,20 +204,31 @@ async function getAnimeDetails(id) {
     }
   };
   cacheSet(cacheKey, details, 1800);
+  logger.info({ id, title }, "details fetched");
   return details;
 }
 async function getEpisodes(animeId) {
   const cacheKey = `episodes:${animeId}`;
   const cached = cacheGet(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    logger.debug({ animeId }, "episodes cache hit");
+    return cached;
+  }
+  logger.info({ animeId }, "fetching episode list");
   const numericId = await getNumericId(animeId);
-  if (!numericId) return [];
+  if (!numericId) {
+    logger.warn({ animeId }, "could not resolve numeric ID");
+    return [];
+  }
   const resp = await ajaxClient.get(`/ajax/episode/list/${numericId}`, {
     headers: { Referer: `${BASE_URL}/watch/${animeId}` }
   });
   const data = resp.data;
   const html = data.result ?? "";
-  if (!html) return [];
+  if (!html) {
+    logger.warn({ animeId, numericId, status: data.status }, "episode list returned no html");
+    return [];
+  }
   const $ = cheerio.load(html);
   const episodes = [];
   $("a[data-ids][data-num]").each((_, el) => {
@@ -186,15 +243,23 @@ async function getEpisodes(animeId) {
   });
   episodes.sort((a, b) => a.number - b.number);
   cacheSet(cacheKey, episodes, 600);
+  logger.info({ animeId, count: episodes.length }, "episodes fetched");
   return episodes;
 }
 async function getServers(animeId, ep, type) {
   const cacheKey = `servers:${animeId}:${ep}:${type}`;
   const cached = cacheGet(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    logger.debug({ animeId, ep, type }, "servers cache hit");
+    return cached;
+  }
+  logger.info({ animeId, ep, type }, "fetching server list");
   const episodes = await getEpisodes(animeId);
   const episode = episodes.find((e) => e.number === ep);
-  if (!episode) return [];
+  if (!episode) {
+    logger.warn({ animeId, ep }, "episode not found");
+    return [];
+  }
   const [animeNumId, epsNum] = episode.id.split("&eps=");
   const resp = await ajaxClient.get("/ajax/server/list", {
     params: { servers: animeNumId, eps: epsNum },
@@ -202,7 +267,10 @@ async function getServers(animeId, ep, type) {
   });
   const data = resp.data;
   const html = data.result ?? "";
-  if (!html) return [];
+  if (!html) {
+    logger.warn({ episodeId: episode.id, type }, "server list returned no html");
+    return [];
+  }
   const $ = cheerio.load(html);
   const servers = [];
   $(".type").each((_, typeEl) => {
@@ -220,9 +288,11 @@ async function getServers(animeId, ep, type) {
     });
   });
   cacheSet(cacheKey, servers, 300);
+  logger.info({ animeId, ep, type, count: servers.length }, "servers fetched");
   return servers;
 }
 async function getEmbedUrl(linkId, refererAnimeId) {
+  logger.info({ linkId: linkId.slice(0, 40) }, "resolving embed URL from /ajax/sources");
   const resp = await ajaxClient.get("/ajax/sources", {
     params: { id: linkId },
     headers: {
@@ -230,21 +300,37 @@ async function getEmbedUrl(linkId, refererAnimeId) {
     }
   });
   const data = resp.data;
-  if (!data.result?.url) return null;
+  logger.debug(
+    {
+      status: data.status,
+      url: data.result?.url?.slice(0, 80),
+      sourcesCount: data.result?.sources?.length ?? 0
+    },
+    "sources endpoint response"
+  );
+  if (!data.result?.url) {
+    logger.warn({ linkId: linkId.slice(0, 40) }, "no URL in sources result");
+    return null;
+  }
   return data.result;
 }
-
-// src/lib/logger.ts
-import pino from "pino";
-var logger = pino({
-  level: process.env["LOG_LEVEL"] ?? "info"
-});
 
 // src/lib/anime/providers/vidplay.ts
 import axios2 from "axios";
 import * as cheerio2 from "cheerio";
 import CryptoJS from "crypto-js";
-var FALLBACK_KEYS = [[8, 0], [6, 2], [1, 5]];
+var VIDPLAY_HOSTS = [
+  "vidplay.online",
+  "vidplay.lol",
+  "vidcloud.lol",
+  "mcloud.bz"
+];
+var MEGACLOUD_HOSTS = ["megacloud.tv", "rapid-cloud.co", "rabbitstream.net"];
+var FALLBACK_KEYS = [
+  [8, 0],
+  [6, 2],
+  [1, 5]
+];
 async function fetchVidplayKeys() {
   try {
     const resp = await axios2.get(
@@ -255,7 +341,10 @@ async function fetchVidplayKeys() {
     const match = text.match(/const\s+keys\s*=\s*(\[\[.*?\]\])/s);
     if (match) {
       const parsed = JSON.parse(match[1]);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        logger.debug({ count: parsed.length }, "vidplay keys fetched from repo");
+        return parsed;
+      }
     }
   } catch {
     logger.warn("could not fetch live vidplay keys, using fallback");
@@ -266,10 +355,7 @@ function vrfEncrypt(id, keys) {
   let result = id;
   for (const [key] of keys) {
     const wordArray = CryptoJS.enc.Utf8.parse(result);
-    const encrypted = CryptoJS.RC4.encrypt(
-      wordArray,
-      CryptoJS.enc.Utf8.parse(String(key))
-    );
+    const encrypted = CryptoJS.RC4.encrypt(wordArray, CryptoJS.enc.Utf8.parse(String(key)));
     result = encrypted.ciphertext.toString(CryptoJS.enc.Base64);
   }
   return encodeURIComponent(result.replace(/\//g, "_").replace(/\+/g, "-"));
@@ -290,24 +376,31 @@ function aesDecrypt(ciphertext, key) {
 async function extractVidplay(embedUrl) {
   const urlObj = new URL(embedUrl);
   const host = urlObj.hostname;
+  logger.info({ embedUrl, host }, "[Stage 1] fetching embed page");
   let embedHtml;
   try {
     const resp = await axios2.get(embedUrl, {
       timeout: 15e3,
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         Accept: "text/html,*/*;q=0.8",
         Referer: "https://aniwaves.ru/"
       }
     });
     embedHtml = resp.data;
+    logger.debug(
+      { status: resp.status, snippet: embedHtml.slice(0, 300) },
+      "[Stage 1] embed page fetched"
+    );
   } catch (err) {
-    logger.error({ error: err.message }, "[Vidplay] Stage 1 FAILED");
+    const e = err;
+    logger.error({ embedUrl, error: e.message }, "[Stage 1] embed page fetch failed");
     return null;
   }
   const $ = cheerio2.load(embedHtml);
-  const scriptContent = $("script:not([src])").map((_, el) => $(el).html() ?? "").get().join("\n");
   let rawId = null;
+  let sourcesPath = null;
+  const scriptContent = $("script:not([src])").map((_, el) => $(el).html() ?? "").get().join("\n");
   const idPatterns = [
     /getSources\s*\(\s*\{[^}]*id\s*:\s*['"]([^'"]+)['"]/,
     /var\s+id\s*=\s*['"]([^'"]+)['"]/,
@@ -321,24 +414,50 @@ async function extractVidplay(embedUrl) {
       break;
     }
   }
+  const pathPatterns = [
+    /getSources\s*\(\s*\{[^}]*url\s*:\s*['"]([^'"]+)['"]/,
+    /sourcesUrl\s*=\s*['"]([^'"]+)['"]/,
+    /["']sources["']\s*:\s*["']([^'"]+)["']/
+  ];
+  for (const pat of pathPatterns) {
+    const m = scriptContent.match(pat);
+    if (m) {
+      sourcesPath = m[1] ?? null;
+      break;
+    }
+  }
   if (!rawId) {
     const pathParts = urlObj.pathname.split("/").filter(Boolean);
     rawId = pathParts[pathParts.length - 1] ?? null;
   }
+  logger.debug({ rawId, sourcesPath }, "[Stage 1] extracted embed metadata");
   if (!rawId) {
-    logger.error("[Vidplay] no source ID found");
+    logger.error({ embedUrl }, "[Stage 1] FAILED \u2014 could not extract source ID from embed page");
     return null;
   }
+  logger.info({ host }, "[Stage 2] fetching futoken keys");
   const keys = await fetchVidplayKeys();
   const token = buildFutoken(keys, rawId);
   const encodedId = vrfEncrypt(rawId, keys);
-  const mediaInfoUrl = `https://${host}/mediainfo/${encodedId}`;
+  logger.debug(
+    { token: token.slice(0, 60), encodedId: encodedId.slice(0, 40) },
+    "[Stage 2] token generated"
+  );
+  const mediaInfoUrl = sourcesPath ? `https://${host}${sourcesPath}` : `https://${host}/mediainfo/${encodedId}`;
+  const mediaInfoParams = { t: token };
+  if (urlObj.searchParams.get("t")) {
+    mediaInfoParams["autoplay"] = "1";
+  }
+  logger.info(
+    { mediaInfoUrl, params: mediaInfoParams },
+    "[Stage 3] requesting source API"
+  );
   let rawBody;
   try {
     const resp = await axios2.get(mediaInfoUrl, {
-      params: { t: token },
+      params: mediaInfoParams,
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         Accept: "*/*",
         Referer: embedUrl,
         Origin: `https://${host}`,
@@ -347,19 +466,40 @@ async function extractVidplay(embedUrl) {
       timeout: 15e3
     });
     rawBody = typeof resp.data === "string" ? resp.data : JSON.stringify(resp.data);
+    logger.debug(
+      { status: resp.status, snippet: rawBody.slice(0, 300) },
+      "[Stage 3] source API response"
+    );
   } catch (err) {
-    logger.error({ error: err.message }, "[Vidplay] Stage 3 FAILED");
+    const e = err;
+    logger.error(
+      {
+        mediaInfoUrl,
+        error: e.message,
+        status: e.response?.status,
+        body: JSON.stringify(e.response?.data ?? "").slice(0, 200)
+      },
+      "[Stage 3] FAILED \u2014 source API request failed"
+    );
     return null;
   }
+  logger.info("[Stage 4] parsing source API response");
   let parsed;
   try {
     parsed = JSON.parse(rawBody);
   } catch {
+    logger.warn({ snippet: rawBody.slice(0, 100) }, "[Stage 4] response is not JSON, may be encrypted");
     parsed = { encrypted: true, sources: rawBody };
   }
+  logger.debug(
+    { keys: Object.keys(parsed), encrypted: parsed["encrypted"] },
+    "[Stage 4] raw response structure"
+  );
+  logger.info("[Stage 5] decryption stage");
   let sourcesData = parsed["sources"];
   const isEncrypted = parsed["encrypted"] === true || typeof parsed["sources"] === "string";
   if (isEncrypted && typeof sourcesData === "string") {
+    logger.debug({ encrypted: true }, "[Stage 5] sources appear AES-encrypted");
     const decryptionKeys = [
       "9Y6I6HiQOqjDUlbAEWtFhg==",
       "WXrUARXb1aDLaZjI",
@@ -372,6 +512,7 @@ async function extractVidplay(embedUrl) {
         const result = aesDecrypt(sourcesData, dkey);
         if (result && result.startsWith("[")) {
           decrypted = result;
+          logger.debug({ key: dkey }, "[Stage 5] AES decryption succeeded");
           break;
         }
       } catch {
@@ -381,43 +522,58 @@ async function extractVidplay(embedUrl) {
       try {
         const keyBytes = CryptoJS.MD5(rawId).toString();
         const result = aesDecrypt(sourcesData, keyBytes);
-        if (result && result.length > 5) decrypted = result;
+        if (result && result.length > 5) {
+          decrypted = result;
+          logger.debug({ key: "MD5(rawId)" }, "[Stage 5] AES decryption succeeded with MD5 key");
+        }
       } catch {
       }
     }
     if (!decrypted) {
-      logger.error("[Vidplay] all decryption attempts failed");
+      logger.error("[Stage 5] FAILED \u2014 all decryption attempts failed for encrypted sources");
       return null;
     }
     try {
       sourcesData = JSON.parse(decrypted);
     } catch {
-      logger.error("[Vidplay] decrypted payload is not valid JSON");
+      logger.error({ snippet: decrypted.slice(0, 100) }, "[Stage 5] FAILED \u2014 decrypted payload is not valid JSON");
       return null;
     }
+  } else {
+    logger.debug("[Stage 5] sources not encrypted, skipping decryption");
   }
+  logger.info("[Stage 6] parsing source list");
   const sourcesArr = Array.isArray(sourcesData) ? sourcesData : Array.isArray(parsed["sources"]) ? parsed["sources"] : [];
+  logger.debug(
+    { count: sourcesArr.length, first: JSON.stringify(sourcesArr[0] ?? {}).slice(0, 150) },
+    "[Stage 6] source array"
+  );
   if (sourcesArr.length === 0) {
-    logger.error("[Vidplay] empty source array");
+    logger.error("[Stage 6] FAILED \u2014 source array is empty after parsing");
     return null;
   }
-  const tracksRaw = parsed["tracks"] ?? parsed["subtitles"] ?? [];
-  const subtitles = tracksRaw.filter((t) => t.kind !== "thumbnails").map((t) => ({
+  const subtitlesRaw = parsed["tracks"] ?? parsed["subtitles"] ?? [];
+  const subtitles = subtitlesRaw.filter((t) => t.kind !== "thumbnails").map((t) => ({
     lang: (t.label ?? "").toLowerCase().split(" ").join("-"),
     label: t.label ?? "Unknown",
     url: t.file ?? t.src ?? ""
   })).filter((s) => s.url);
-  const thumbnailTrack = tracksRaw.find((t) => t.kind === "thumbnails");
-  const thumbnails = thumbnailTrack?.file ?? thumbnailTrack?.src ?? null;
+  const thumbnailTrack = subtitlesRaw.find((t) => t.kind === "thumbnails");
+  const thumbnails = thumbnailTrack ? thumbnailTrack.file ?? thumbnailTrack.src ?? null : null;
   const intro = parsed["intro"] ?? null;
   const outro = parsed["outro"] ?? null;
+  logger.info("[Stage 7] selecting final m3u8");
   const m3u8Source = sourcesArr.find(
     (s) => (s.file ?? s.url ?? s.src ?? "").toLowerCase().includes(".m3u8")
   );
   const anySource = sourcesArr[0];
   const m3u8 = m3u8Source?.file ?? m3u8Source?.url ?? m3u8Source?.src ?? anySource?.file ?? anySource?.url ?? anySource?.src ?? null;
+  logger.info(
+    { m3u8: m3u8?.slice(0, 80) ?? null, provider: "vidplay", subtitleCount: subtitles.length },
+    "[Stage 7] extraction complete"
+  );
   if (!m3u8) {
-    logger.error("[Vidplay] no m3u8 URL found");
+    logger.error("[Stage 7] FAILED \u2014 no m3u8 URL found in source array");
     return null;
   }
   return {
@@ -433,13 +589,225 @@ async function extractVidplay(embedUrl) {
 function isVidplayHost(embedUrl) {
   try {
     const host = new URL(embedUrl).hostname;
-    return host.includes("vidplay") || host.includes("vidcloud") || host.includes("mcloud") || host.includes("goload") || host.includes("vidstreaming");
+    return VIDPLAY_HOSTS.some((h) => host.includes(h)) || MEGACLOUD_HOSTS.some((h) => host.includes(h));
   } catch {
     return false;
   }
 }
 
-// src/lib/anime/providers/byfms.ts
+// src/lib/anime/providers/megacloud.ts
+import axios3 from "axios";
+import * as cheerio3 from "cheerio";
+import CryptoJS2 from "crypto-js";
+var MEGACLOUD_KEYS_URL = "https://raw.githubusercontent.com/theonlymo/keys/main/key";
+async function fetchMegacloudKey() {
+  try {
+    const resp = await axios3.get(MEGACLOUD_KEYS_URL, { timeout: 5e3 });
+    const key = typeof resp.data === "string" ? resp.data.trim() : JSON.stringify(resp.data);
+    logger.debug({ key: key.slice(0, 20) }, "megacloud key fetched");
+    return key;
+  } catch {
+    logger.warn("could not fetch megacloud key");
+    return null;
+  }
+}
+function extractKeyAndDecrypt(ciphertext, keyFromScript) {
+  try {
+    const decrypted = CryptoJS2.AES.decrypt(ciphertext, keyFromScript).toString(
+      CryptoJS2.enc.Utf8
+    );
+    if (decrypted && (decrypted.startsWith("[") || decrypted.startsWith("{"))) {
+      return decrypted;
+    }
+  } catch {
+  }
+  return null;
+}
+function extractKeyFromScript(scriptContent) {
+  const patterns = [
+    /(?:var|let|const)\s+key\s*=\s*['"]([^'"]{8,})['"]/,
+    /key\s*:\s*['"]([^'"]{8,})['"]/,
+    /decryptionKey\s*[:=]\s*['"]([^'"]{8,})['"]/,
+    /k\s*=\s*['"]([^'"]{8,})['"]/
+  ];
+  for (const p of patterns) {
+    const m = scriptContent.match(p);
+    if (m) return m[1] ?? null;
+  }
+  return null;
+}
+async function extractMegacloud(embedUrl) {
+  const urlObj = new URL(embedUrl);
+  const host = urlObj.hostname;
+  const pathParts = urlObj.pathname.split("/").filter(Boolean);
+  const sourceId = pathParts[pathParts.length - 1];
+  if (!sourceId) {
+    logger.error({ embedUrl }, "[MegaCloud Stage 1] FAILED \u2014 no sourceId in URL");
+    return null;
+  }
+  logger.info({ embedUrl, host, sourceId }, "[MegaCloud Stage 1] fetching embed page");
+  let embedHtml = "";
+  let scriptKey = null;
+  try {
+    const resp = await axios3.get(embedUrl, {
+      timeout: 15e3,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        Referer: "https://aniwaves.ru/"
+      }
+    });
+    embedHtml = resp.data;
+    logger.debug(
+      { status: resp.status, snippet: embedHtml.slice(0, 200) },
+      "[MegaCloud Stage 1] embed page fetched"
+    );
+    const $ = cheerio3.load(embedHtml);
+    const scripts = $("script:not([src])").map((_, el) => $(el).html() ?? "").get().join("\n");
+    scriptKey = extractKeyFromScript(scripts);
+    if (scriptKey) {
+      logger.debug({ scriptKey: scriptKey.slice(0, 20) }, "[MegaCloud Stage 1] key found in page scripts");
+    }
+  } catch (err) {
+    const e = err;
+    logger.warn({ error: e.message }, "[MegaCloud Stage 1] embed page fetch failed, continuing");
+  }
+  const endpointMap = {
+    "megacloud.tv": "/embed-2/ajax/e-1/getSources",
+    "rapid-cloud.co": "/embed-6/ajax/e-1/getSources",
+    "rabbitstream.net": "/embed-4/ajax/e-1/getSources"
+  };
+  let sourcesPath = "/embed-2/ajax/e-1/getSources";
+  for (const [h, p] of Object.entries(endpointMap)) {
+    if (host.includes(h)) {
+      sourcesPath = p;
+      break;
+    }
+  }
+  const sourcesUrl = `https://${host}${sourcesPath}`;
+  logger.info(
+    { sourcesUrl, sourceId },
+    "[MegaCloud Stage 2] requesting sources"
+  );
+  let data;
+  try {
+    const resp = await axios3.get(sourcesUrl, {
+      params: { id: sourceId },
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        Accept: "*/*",
+        Referer: embedUrl,
+        Origin: `https://${host}`,
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      timeout: 15e3
+    });
+    data = resp.data;
+    logger.debug(
+      { status: resp.status, snippet: JSON.stringify(data).slice(0, 300) },
+      "[MegaCloud Stage 2] sources response"
+    );
+  } catch (err) {
+    const e = err;
+    logger.error(
+      {
+        sourcesUrl,
+        error: e.message,
+        status: e.response?.status,
+        body: JSON.stringify(e.response?.data ?? "").slice(0, 200)
+      },
+      "[MegaCloud Stage 2] FAILED \u2014 sources request failed"
+    );
+    return null;
+  }
+  logger.info("[MegaCloud Stage 3] decryption check");
+  let sourcesArr = [];
+  const isEncrypted = data["encrypted"] === true || typeof data["sources"] === "string";
+  if (isEncrypted && typeof data["sources"] === "string") {
+    logger.debug("[MegaCloud Stage 3] sources encrypted, attempting decryption");
+    const remoteKey = await fetchMegacloudKey();
+    const keysToTry = [
+      scriptKey,
+      remoteKey,
+      "c1d17096f2ca11b7",
+      "9Y6I6HiQOqjDUlbA",
+      "koko"
+    ].filter(Boolean);
+    let decrypted = null;
+    for (const k of keysToTry) {
+      decrypted = extractKeyAndDecrypt(data["sources"], k);
+      if (decrypted) {
+        logger.debug({ key: k.slice(0, 15) }, "[MegaCloud Stage 3] decryption succeeded");
+        break;
+      }
+    }
+    if (!decrypted) {
+      logger.error("[MegaCloud Stage 3] FAILED \u2014 all decryption attempts failed");
+      return null;
+    }
+    try {
+      sourcesArr = JSON.parse(decrypted);
+    } catch {
+      logger.error("[MegaCloud Stage 3] FAILED \u2014 decrypted payload is not valid JSON");
+      return null;
+    }
+  } else {
+    sourcesArr = Array.isArray(data["sources"]) ? data["sources"] : [];
+    logger.debug("[MegaCloud Stage 3] sources not encrypted");
+  }
+  logger.info(
+    { count: sourcesArr.length },
+    "[MegaCloud Stage 4] source list parsed"
+  );
+  if (sourcesArr.length === 0) {
+    logger.error("[MegaCloud Stage 4] FAILED \u2014 empty source array");
+    return null;
+  }
+  const tracksRaw = data["tracks"] ?? [];
+  const subtitles = tracksRaw.filter((t) => t.kind !== "thumbnails").map((t) => ({
+    lang: (t.label ?? "").toLowerCase().split(" ").join("-"),
+    label: t.label ?? "Unknown",
+    url: t.file ?? t.src ?? ""
+  })).filter((s) => s.url);
+  const thumbnailTrack = tracksRaw.find((t) => t.kind === "thumbnails");
+  const thumbnails = thumbnailTrack?.file ?? thumbnailTrack?.src ?? null;
+  const intro = data["intro"] ?? null;
+  const outro = data["outro"] ?? null;
+  const best = sourcesArr.find(
+    (s) => (s.file ?? s.url ?? s.src ?? "").includes(".m3u8")
+  ) ?? sourcesArr[0];
+  const m3u8 = best?.file ?? best?.url ?? best?.src ?? null;
+  logger.info(
+    { m3u8: m3u8?.slice(0, 80) ?? null, provider: "megacloud" },
+    "[MegaCloud Stage 5] extraction complete"
+  );
+  if (!m3u8) {
+    logger.error("[MegaCloud Stage 5] FAILED \u2014 no m3u8 URL in source array");
+    return null;
+  }
+  return {
+    type: "direct",
+    provider: "megacloud",
+    m3u8,
+    subtitles,
+    thumbnails: thumbnails ?? null,
+    intro,
+    outro
+  };
+}
+function isMegacloudHost(embedUrl) {
+  try {
+    const host = new URL(embedUrl).hostname;
+    return host.includes("megacloud") || host.includes("rapid-cloud") || host.includes("rabbitstream");
+  } catch {
+    return false;
+  }
+}
+
+// src/lib/anime/providers/echovideo.ts
+import axios4 from "axios";
+
+// src/lib/anime/providers/playwright-extractor.ts
+import https from "https";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 var ANIWAVES_REFERER = "https://aniwaves.ru/";
 var ANIWAVES_ORIGIN = "https://aniwaves.ru";
@@ -448,11 +816,37 @@ var PAGE_LOAD_TIMEOUT_MS = 2e4;
 function forceAutoplay(url) {
   return url.replace(/autoPlay=0/gi, "autoPlay=1").replace(/autoplay=0/gi, "autoplay=1");
 }
-async function extractByfms(embedUrl, skipData) {
+function httpsPost(url, headers, body) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const buf = Buffer.from(body);
+    const opts = {
+      hostname: u.hostname,
+      path: u.pathname + u.search,
+      method: "POST",
+      headers: { ...headers, "Content-Length": buf.byteLength }
+    };
+    const req = https.request(opts, (res) => {
+      const respHeaders = {};
+      for (const [k, v] of Object.entries(res.headers)) {
+        if (v) respHeaders[k] = Array.isArray(v) ? v[0] : v;
+      }
+      let data = "";
+      res.on("data", (c) => {
+        data += c.toString();
+      });
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body: data, headers: respHeaders }));
+    });
+    req.on("error", reject);
+    req.write(buf);
+    req.end();
+  });
+}
+async function extractViaPlaywright(embedUrl, providerName, skipData) {
   const autoplayUrl = forceAutoplay(embedUrl);
   logger.info(
-    { embedUrl: autoplayUrl.slice(0, 90) },
-    "[BYFMS] launching headless Chromium"
+    { embedUrl: autoplayUrl.slice(0, 90), providerName },
+    "[Playwright] launching headless Chromium (Byse CDN extractor)"
   );
   let browser = null;
   try {
@@ -477,6 +871,9 @@ async function extractByfms(embedUrl, skipData) {
       userAgent: UA,
       javaScriptEnabled: true,
       ignoreHTTPSErrors: true,
+      permissions: ["camera", "microphone"],
+      // Set Referer to aniwaves.ru at context level.
+      // This makes the /embed/details call pass the domain whitelist check.
       extraHTTPHeaders: {
         Referer: ANIWAVES_REFERER,
         Origin: ANIWAVES_ORIGIN
@@ -492,10 +889,46 @@ async function extractByfms(embedUrl, skipData) {
     const m3u8Urls = [];
     const subtitleUrls = [];
     let thumbnailUrl = null;
+    await page.route("**/embed/playback**", async (route) => {
+      const reqBody = route.request().postData() ?? "{}";
+      const reqUrl = route.request().url();
+      logger.info(
+        { url: reqUrl.slice(0, 90) },
+        "[Playwright] intercepting /embed/playback \u2014 re-issuing with aniwaves.ru Origin"
+      );
+      try {
+        const resp = await httpsPost(reqUrl, {
+          "User-Agent": UA,
+          "Referer": ANIWAVES_REFERER,
+          "Origin": ANIWAVES_ORIGIN,
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        }, reqBody);
+        logger.info(
+          { status: resp.status, url: reqUrl.slice(0, 90) },
+          "[Playwright] /embed/playback direct HTTP response"
+        );
+        await route.fulfill({
+          status: resp.status,
+          headers: {
+            "content-type": "application/json",
+            "access-control-allow-origin": "*",
+            "access-control-allow-credentials": "true"
+          },
+          body: resp.body
+        });
+      } catch (err) {
+        logger.warn(
+          { error: err.message },
+          "[Playwright] failed to re-issue /embed/playback \u2014 falling back to continue"
+        );
+        await route.continue();
+      }
+    });
     page.on("request", (req) => {
       const url = req.url();
       if (url.includes(".m3u8")) {
-        logger.info({ url: url.slice(0, 130) }, "[BYFMS] m3u8 request intercepted");
+        logger.info({ url: url.slice(0, 130) }, "[Playwright] \u2713 m3u8 request intercepted");
         if (!m3u8Urls.includes(url)) m3u8Urls.push(url);
       }
       if (url.includes(".vtt") || url.includes(".srt")) {
@@ -515,6 +948,7 @@ async function extractByfms(embedUrl, skipData) {
     page.on("response", async (resp) => {
       const url = resp.url();
       if (url.includes(".m3u8") && !m3u8Urls.includes(url)) {
+        logger.info({ url: url.slice(0, 130) }, "[Playwright] \u2713 m3u8 response intercepted");
         m3u8Urls.push(url);
         return;
       }
@@ -524,8 +958,9 @@ async function extractByfms(embedUrl, skipData) {
           const text = await resp.text();
           if (text.includes(".m3u8")) {
             const match = text.match(/https?:\/\/[^\s"'\\]+\.m3u8[^\s"'\\]*/);
-            if (match && !m3u8Urls.includes(match[0])) {
-              m3u8Urls.push(match[0]);
+            if (match) {
+              logger.info({ url: match[0].slice(0, 130) }, "[Playwright] \u2713 m3u8 found in JSON response");
+              if (!m3u8Urls.includes(match[0])) m3u8Urls.push(match[0]);
             }
           }
         } catch {
@@ -544,17 +979,25 @@ async function extractByfms(embedUrl, skipData) {
         resolve();
       }, timeoutMs);
     });
-    logger.info("[BYFMS] navigating to embed page");
+    logger.info("[Playwright] navigating to embed page");
     await page.goto(autoplayUrl, { waitUntil: "domcontentloaded", timeout: PAGE_LOAD_TIMEOUT_MS }).catch((err) => {
-      logger.warn({ error: err.message }, "[BYFMS] page.goto error, continuing");
+      logger.warn({ error: err.message }, "[Playwright] page.goto errored \u2014 continuing");
     });
     await waitForM3u8(M3U8_TIMEOUT_MS);
     if (m3u8Urls.length === 0) {
-      logger.error("[BYFMS] no m3u8 intercepted");
+      const pageTitle = await page.title().catch(() => "unknown");
+      const pageUrl = page.url();
+      logger.error(
+        { embedUrl: autoplayUrl.slice(0, 90), pageTitle, pageUrl },
+        "[Playwright] no m3u8 intercepted \u2014 page may be blocked or video not found"
+      );
       return null;
     }
     const m3u8 = m3u8Urls.find((u) => u.includes("master")) ?? m3u8Urls.find((u) => !u.includes("segment") && !u.includes("chunk") && !u.includes(".ts?")) ?? m3u8Urls[0];
-    logger.info({ m3u8: m3u8.slice(0, 130) }, "[BYFMS] extraction SUCCESS");
+    logger.info(
+      { m3u8: m3u8.slice(0, 130), candidates: m3u8Urls.length },
+      "[Playwright] \u2713 extraction SUCCESS"
+    );
     let intro = null;
     let outro = null;
     if (skipData?.intro && (skipData.intro[0] !== 0 || skipData.intro[1] !== 0)) {
@@ -570,7 +1013,7 @@ async function extractByfms(embedUrl, skipData) {
     }));
     return {
       type: "direct",
-      provider: "byfms",
+      provider: providerName,
       m3u8,
       subtitles,
       thumbnails: thumbnailUrl,
@@ -578,16 +1021,178 @@ async function extractByfms(embedUrl, skipData) {
       outro
     };
   } catch (err) {
-    logger.error({ error: err.message }, "[BYFMS] fatal error");
+    logger.error(
+      { error: err.message, embedUrl: embedUrl.slice(0, 90) },
+      "[Playwright] fatal error"
+    );
     return null;
   } finally {
     if (browser) {
       await browser.close().catch(() => {
       });
+      logger.debug("[Playwright] browser closed");
     }
   }
 }
-function isByfmsHost(url) {
+
+// src/lib/anime/providers/echovideo.ts
+async function extractEchovideo(embedUrl, skipData) {
+  const urlObj = new URL(embedUrl);
+  const host = urlObj.hostname;
+  const pathMatch = urlObj.pathname.match(/^\/(embed-\d+)\//);
+  const embedPrefix = pathMatch?.[1] ?? "embed-1";
+  const pathParts = urlObj.pathname.split("/").filter(Boolean);
+  const sourceId = pathParts[pathParts.length - 1];
+  if (!sourceId) {
+    logger.error({ embedUrl }, "[Echovideo S1] FAILED \u2014 no sourceId in URL path");
+    return extractViaPlaywright(embedUrl, "echovideo", skipData);
+  }
+  logger.info(
+    { embedUrl: embedUrl.slice(0, 80), host, embedPrefix, sourceId: sourceId.slice(0, 30) },
+    "[Echovideo S1] fetching embed page"
+  );
+  const commonHeaders = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    Referer: "https://aniwaves.ru/",
+    Accept: "text/html,application/xhtml+xml,*/*"
+  };
+  try {
+    const pageResp = await axios4.get(embedUrl, { timeout: 1e4, headers: commonHeaders });
+    logger.debug(
+      { status: pageResp.status, snippet: String(pageResp.data).slice(0, 120) },
+      "[Echovideo S1] embed page fetched"
+    );
+  } catch (err) {
+    logger.warn({ error: err.message }, "[Echovideo S1] embed page fetch failed, continuing");
+  }
+  const sourcesUrl = `https://${host}/${embedPrefix}/getSources`;
+  logger.info(
+    { sourcesUrl, sourceId: sourceId.slice(0, 30) },
+    "[Echovideo S2] requesting getSources"
+  );
+  let data;
+  try {
+    const resp = await axios4.get(sourcesUrl, {
+      params: { id: sourceId },
+      headers: {
+        "User-Agent": commonHeaders["User-Agent"],
+        Accept: "application/json, */*",
+        Referer: embedUrl,
+        Origin: `https://${host}`,
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Site": "same-origin"
+      },
+      timeout: 12e3
+    });
+    data = resp.data;
+    logger.debug(
+      {
+        status: resp.status,
+        sourcesType: typeof data.sources,
+        hasIntro: data.intro != null,
+        hasOutro: data.outro != null,
+        trackCount: data.tracks?.length ?? 0,
+        snippet: JSON.stringify(data).slice(0, 300)
+      },
+      "[Echovideo S2] getSources response"
+    );
+  } catch (err) {
+    const e = err;
+    logger.error(
+      {
+        sourcesUrl,
+        error: e.message,
+        status: e.response?.status,
+        body: JSON.stringify(e.response?.data ?? "").slice(0, 200)
+      },
+      "[Echovideo S2] FAILED \u2014 getSources request failed, falling back to Playwright"
+    );
+    return extractViaPlaywright(embedUrl, "echovideo", skipData);
+  }
+  logger.info("[Echovideo S3] extracting m3u8 URL from response");
+  let m3u8 = null;
+  if (typeof data.sources === "string" && data.sources.length > 0) {
+    m3u8 = data.sources;
+    logger.debug({ m3u8: m3u8.slice(0, 80) }, "[Echovideo S3] sources is a plain string URL");
+  } else if (Array.isArray(data.sources)) {
+    const m3u8Entry = data.sources.find(
+      (s) => (s.file ?? s.url ?? "").toLowerCase().includes(".m3u8")
+    ) ?? data.sources[0];
+    m3u8 = m3u8Entry?.file ?? m3u8Entry?.url ?? null;
+    logger.debug({ m3u8: m3u8?.slice(0, 80) ?? null }, "[Echovideo S3] sources is an array");
+  }
+  if (!m3u8) {
+    logger.warn(
+      { sourcesRaw: JSON.stringify(data.sources).slice(0, 200) },
+      "[Echovideo S3] no m3u8 in sources \u2014 falling back to Playwright"
+    );
+    return extractViaPlaywright(embedUrl, "echovideo", skipData);
+  }
+  logger.info("[Echovideo S4] parsing tracks");
+  const tracksRaw = data.tracks ?? [];
+  const subtitles = tracksRaw.filter(
+    (t) => t.kind !== "thumbnails" && t.kind !== "preview" && (t.file ?? t.src ?? "").length > 0
+  ).map((t) => ({
+    lang: (t.label ?? "unknown").toLowerCase().replace(/\s+/g, "-"),
+    label: t.label ?? "Unknown",
+    url: t.file ?? t.src ?? ""
+  }));
+  const thumbnailTrack = tracksRaw.find(
+    (t) => t.kind === "thumbnails" || t.kind === "preview"
+  );
+  const thumbnails = thumbnailTrack?.file ?? thumbnailTrack?.src ?? null;
+  logger.info("[Echovideo S5] building skip times");
+  let intro = null;
+  let outro = null;
+  if (data.intro && (data.intro.start !== 0 || data.intro.end !== 0)) {
+    intro = { start: data.intro.start, end: data.intro.end };
+  } else if (skipData?.intro && (skipData.intro[0] !== 0 || skipData.intro[1] !== 0)) {
+    intro = { start: skipData.intro[0], end: skipData.intro[1] };
+  }
+  if (data.outro && (data.outro.start !== 0 || data.outro.end !== 0)) {
+    outro = { start: data.outro.start, end: data.outro.end };
+  } else if (skipData?.outro && (skipData.outro[0] !== 0 || skipData.outro[1] !== 0)) {
+    outro = { start: skipData.outro[0], end: skipData.outro[1] };
+  }
+  logger.info(
+    {
+      m3u8: m3u8.slice(0, 100),
+      subtitles: subtitles.length,
+      thumbnails: thumbnails?.slice(0, 60) ?? null,
+      intro,
+      outro
+    },
+    "[Echovideo S5] extraction complete \u2014 SUCCESS"
+  );
+  return {
+    type: "direct",
+    provider: "echovideo",
+    m3u8,
+    subtitles,
+    thumbnails,
+    intro,
+    outro
+  };
+}
+function isEchovideoHost(url) {
+  try {
+    const host = new URL(url).hostname;
+    return host.includes("echovideo") || host.includes("echo");
+  } catch {
+    return false;
+  }
+}
+
+// src/lib/anime/providers/weneverbeenfree.ts
+async function extractWeneverbeenfree(embedUrl, skipData) {
+  logger.info(
+    { embedUrl: embedUrl.slice(0, 90) },
+    "[WNBF] using Playwright headless browser extractor (Byse CDN)"
+  );
+  return extractViaPlaywright(embedUrl, "weneverbeenfree", skipData);
+}
+function isWeneverbeenfreeHost(url) {
   try {
     const host = new URL(url).hostname;
     return host.includes("weneverbeenfree") || host.includes("wnbf") || host.includes("myvidplay") || host.includes("animefever");
@@ -597,8 +1202,8 @@ function isByfmsHost(url) {
 }
 
 // src/lib/anime/providers/dghg.ts
-import axios3 from "axios";
-var PLAYMOGO_HOSTS = [
+import axios5 from "axios";
+var DOOD_HOSTS = [
   "playmogo.com",
   "myvidplay.com",
   "doodstream.com",
@@ -614,18 +1219,52 @@ var PLAYMOGO_HOSTS = [
   "dood.sh",
   "dood.watch"
 ];
+function isPlaymogoHost(url) {
+  try {
+    const host = new URL(url).hostname;
+    return DOOD_HOSTS.some((h) => host.includes(h));
+  } catch {
+    return false;
+  }
+}
+var UA2 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+async function followPassMd5(passMd5Url, referer) {
+  let location = null;
+  try {
+    const r = await axios5.get(passMd5Url, {
+      timeout: 15e3,
+      headers: { "User-Agent": UA2, Referer: referer, Accept: "*/*" },
+      maxRedirects: 0,
+      validateStatus: (s) => s === 200 || s === 301 || s === 302
+    });
+    if (r.status === 200) {
+      const body = r.data?.trim();
+      if (body && (body.startsWith("http") || body.startsWith("REDIRECT"))) return body;
+    }
+    location = r.headers["location"] ?? null;
+  } catch {
+  }
+  if (location) {
+    try {
+      const r2 = await axios5.get(location, {
+        timeout: 15e3,
+        headers: { "User-Agent": UA2, Referer: referer, Accept: "*/*" },
+        maxRedirects: 5
+      });
+      return r2.data?.trim() || null;
+    } catch {
+      return location.startsWith("http") ? location : null;
+    }
+  }
+  return null;
+}
 async function extractDghg(embedUrl, skipData) {
   logger.info({ embedUrl: embedUrl.slice(0, 80) }, "[DGHG] starting extraction");
-  const commonHeaders = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    Accept: "text/html,*/*",
-    Referer: "https://aniwaves.ru/"
-  };
   let html;
   try {
-    const resp = await axios3.get(embedUrl, {
+    const resp = await axios5.get(embedUrl, {
       timeout: 15e3,
-      headers: commonHeaders,
+      headers: { "User-Agent": UA2, Accept: "text/html,*/*", Referer: "https://aniwaves.ru/" },
       maxRedirects: 5
     });
     html = resp.data;
@@ -633,65 +1272,35 @@ async function extractDghg(embedUrl, skipData) {
     logger.error({ error: err.message }, "[DGHG] Step 1 FAILED");
     return null;
   }
-  const fileIdMatch = html.match(/file_id['"]\s*,\s*['"]([^'"]+)['"]/);
-  const fileId = fileIdMatch?.[1] ?? null;
-  const tokenMatch = html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/) || html.match(/pass_md5\/[^"]+\/([^"'\\/]+)['"]?/) || html.match(/\?token=([a-zA-Z0-9]+)/);
-  let token = tokenMatch?.[1] ?? null;
-  const passMd5Match = html.match(
-    /\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]/
-  );
   let passMd5Path = null;
+  const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
   if (passMd5Match) {
     passMd5Path = passMd5Match[1];
-    if (!token) {
-      const pathParts = passMd5Path.split("/");
-      if (pathParts.length >= 2) token = pathParts[1] || null;
-    }
   }
-  if (!fileId && !passMd5Path) {
-    logger.error("[DGHG] Step 2 FAILED \u2014 no file_id or pass_md5 path");
+  let token = null;
+  if (passMd5Path) {
+    const parts = passMd5Path.split("/");
+    if (parts.length >= 2) token = parts[1];
+  }
+  if (!token) {
+    const tokenMatch = html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/) || html.match(/makePlay\(\)[^?]*\?token=([a-zA-Z0-9]+)/);
+    token = tokenMatch?.[1] ?? null;
+  }
+  logger.debug({ passMd5Path: passMd5Path?.slice(0, 50), token: token?.slice(0, 20) }, "[DGHG] extracted creds");
+  if (!passMd5Path) {
+    logger.error("[DGHG] Step 2 FAILED \u2014 no pass_md5 path in HTML");
     return null;
   }
   const urlObj = new URL(embedUrl);
-  const host = urlObj.hostname;
-  let cdnBaseUrl = null;
-  if (passMd5Path) {
-    try {
-      const passMd5Url = `https://${host}/pass_md5/${passMd5Path}`;
-      const resp = await axios3.get(passMd5Url, {
-        timeout: 15e3,
-        headers: { ...commonHeaders, Referer: embedUrl },
-        maxRedirects: 5
-      });
-      cdnBaseUrl = resp.data?.trim() || null;
-    } catch (err) {
-      const e = err;
-      if (e.response?.data) cdnBaseUrl = e.response.data?.trim() || null;
-    }
-  }
-  if (!cdnBaseUrl && fileId && token) {
-    const randomSuffix = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-    const passMd5Path2 = `${fileId}-${randomSuffix}/${token}`;
-    try {
-      const passMd5Url = `https://${host}/pass_md5/${passMd5Path2}`;
-      const resp = await axios3.get(passMd5Url, {
-        timeout: 15e3,
-        headers: { ...commonHeaders, Referer: embedUrl },
-        maxRedirects: 0,
-        validateStatus: (s) => s === 200 || s === 301 || s === 302
-      });
-      cdnBaseUrl = resp.data?.trim() || null;
-    } catch (err) {
-      const e = err;
-      if (e.response?.data) cdnBaseUrl = e.response.data?.trim() || null;
-    }
-  }
+  const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
+  const cdnBaseUrl = await followPassMd5(passMd5Url, embedUrl);
   if (!cdnBaseUrl) {
     logger.error("[DGHG] Step 3 FAILED \u2014 no CDN URL");
     return null;
   }
   const expiry = Date.now();
   const finalUrl = `${cdnBaseUrl}?token=${token}&expiry=${expiry}`;
+  logger.info({ finalUrl: finalUrl.slice(0, 80) }, "[DGHG] extraction SUCCESS");
   let intro = null;
   let outro = null;
   if (skipData?.intro?.[1] && skipData.intro[1] > 0) {
@@ -700,7 +1309,6 @@ async function extractDghg(embedUrl, skipData) {
   if (skipData?.outro?.[1] && skipData.outro[1] > 0) {
     outro = { start: skipData.outro[0], end: skipData.outro[1] };
   }
-  logger.info("[DGHG] extraction complete \u2014 SUCCESS");
   return {
     type: "direct",
     provider: "dghg",
@@ -711,51 +1319,49 @@ async function extractDghg(embedUrl, skipData) {
     outro
   };
 }
-function isDghgHost(url) {
-  try {
-    const host = new URL(url).hostname;
-    return PLAYMOGO_HOSTS.some((h) => host.includes(h));
-  } catch {
-    return false;
-  }
-}
 
 // src/lib/anime/providers/index.ts
 async function extractStream(embedUrl, serverName, skipData) {
   const lowerName = serverName.toLowerCase();
   logger.info(
-    { embedUrl: embedUrl.slice(0, 90), serverName },
+    { embedUrl: embedUrl.slice(0, 80), serverName },
     "dispatching to provider extractor"
   );
-  if (isDghgHost(embedUrl) || lowerName.includes("dghg") || lowerName.includes("playmogo") || lowerName.includes("dood")) {
-    logger.info({ serverName }, "routing to DGHG extractor");
+  if (isPlaymogoHost(embedUrl) || lowerName.includes("dghg") || lowerName.includes("myvidplay")) {
+    logger.info({ serverName }, "routing to DGHG/PlayMogo extractor");
     return extractDghg(embedUrl, skipData);
   }
-  if (isByfmsHost(embedUrl) || lowerName.includes("byfms") || lowerName.includes("weneverbeenfree")) {
-    logger.info({ serverName }, "routing to BYFMS extractor");
-    return extractByfms(embedUrl, skipData);
+  if (isWeneverbeenfreeHost(embedUrl) || lowerName.includes("byfms") || lowerName.includes("weneverbeenfree")) {
+    logger.info({ serverName }, "routing to WeneverBeenFree extractor");
+    return extractWeneverbeenfree(embedUrl, skipData);
+  }
+  if (isEchovideoHost(embedUrl) || lowerName.includes("echo")) {
+    logger.info({ serverName }, "routing to Echovideo extractor");
+    return extractEchovideo(embedUrl, skipData);
+  }
+  if (isMegacloudHost(embedUrl) || lowerName.includes("megacloud") || lowerName.includes("rapidcloud") || lowerName.includes("rabbitstream") || lowerName.includes("mycloud")) {
+    logger.info({ serverName }, "routing to MegaCloud extractor");
+    return extractMegacloud(embedUrl);
   }
   if (isVidplayHost(embedUrl) || lowerName.includes("vidplay") || lowerName.includes("vidcloud")) {
     logger.info({ serverName }, "routing to Vidplay extractor");
     return extractVidplay(embedUrl);
   }
   logger.warn(
-    { serverName, embedUrl: embedUrl.slice(0, 90) },
-    "unknown provider \u2014 trying all extractors"
+    { serverName, embedUrl: embedUrl.slice(0, 80) },
+    "unknown provider, trying all extractors in order"
   );
-  const attempts = [
-    () => extractDghg(embedUrl, skipData),
-    () => extractVidplay(embedUrl),
-    () => extractByfms(embedUrl, skipData)
-  ];
-  for (const attempt of attempts) {
-    try {
-      const result = await attempt();
-      if (result?.m3u8) return result;
-    } catch {
-    }
+  if (/\/embed-\d+\//.test(embedUrl)) {
+    const echoResult = await extractEchovideo(embedUrl, skipData);
+    if (echoResult?.m3u8) return echoResult;
   }
-  logger.error({ serverName, embedUrl: embedUrl.slice(0, 90) }, "all extractors failed");
+  const vidplayResult = await extractVidplay(embedUrl);
+  if (vidplayResult?.m3u8) return vidplayResult;
+  const megacloudResult = await extractMegacloud(embedUrl);
+  if (megacloudResult?.m3u8) return megacloudResult;
+  const wnbfResult = await extractWeneverbeenfree(embedUrl, skipData);
+  if (wnbfResult?.m3u8) return wnbfResult;
+  logger.error({ serverName, embedUrl: embedUrl.slice(0, 80) }, "all extractors failed");
   return null;
 }
 
@@ -835,6 +1441,7 @@ router2.get("/stream", async (req, res) => {
     res.status(404).json({ error: "No servers found for this episode/type" });
     return;
   }
+  req.log.debug({ servers: servers.map((s) => s.name) }, "available servers");
   if (serverName) {
     const targetServer = servers.find(
       (s) => s.name.toLowerCase().includes(serverName.toLowerCase())
@@ -846,6 +1453,10 @@ router2.get("/stream", async (req, res) => {
       });
       return;
     }
+    req.log.info(
+      { serverName: targetServer.name, linkId: targetServer.id.slice(0, 30) },
+      "trying specific server (no fallback)"
+    );
     const sourcesResult = await getEmbedUrl(targetServer.id, id);
     if (!sourcesResult?.url) {
       res.status(502).json({ error: `Could not resolve embed URL for server "${serverName}"` });
@@ -856,6 +1467,7 @@ router2.get("/stream", async (req, res) => {
       outro: sourcesResult.skip_data?.outro
     });
     if (stream?.m3u8) {
+      req.log.info({ serverName: targetServer.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
       res.json({ ...stream, _server: targetServer.name });
       return;
     }
@@ -867,8 +1479,13 @@ router2.get("/stream", async (req, res) => {
   }
   const failedServers = [];
   for (const server of servers) {
+    req.log.info(
+      { serverName: server.name, linkId: server.id.slice(0, 30) },
+      "trying server"
+    );
     const sourcesResult = await getEmbedUrl(server.id, id);
     if (!sourcesResult?.url) {
+      req.log.warn({ serverName: server.name }, "could not resolve embed URL \u2014 skipping");
       failedServers.push(server.name);
       continue;
     }
@@ -877,13 +1494,18 @@ router2.get("/stream", async (req, res) => {
       outro: sourcesResult.skip_data?.outro
     });
     if (stream?.m3u8) {
+      req.log.info({ serverName: server.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
       res.json({ ...stream, _server: server.name, _failedServers: failedServers });
       return;
     }
+    req.log.warn(
+      { serverName: server.name },
+      "extraction failed \u2014 trying next server"
+    );
     failedServers.push(server.name);
   }
   res.status(502).json({
-    error: "All servers failed",
+    error: "All servers failed \u2014 check logs for stage-by-stage detail",
     failedServers
   });
 });
@@ -903,10 +1525,21 @@ router2.get("/proxy", async (req, res) => {
   }
   let referer = typeof refererParam === "string" ? refererParam : null;
   if (!referer) {
-    referer = `https://${targetUrl.hostname}/`;
+    const host = targetUrl.hostname;
+    if (host.includes("echovideo") || host.includes("echo")) {
+      referer = "https://play.echovideo.ru/";
+    } else if (host.includes("weneverbeenfree") || host.includes("owphbf") || host.includes("sprintcdn")) {
+      referer = "https://weneverbeenfree.com/";
+    } else {
+      referer = "https://play.echovideo.ru/";
+    }
   }
+  req.log.info(
+    { url: urlParam.slice(0, 80), referer },
+    "proxying stream URL"
+  );
   try {
-    const upstream = await axios4.get(urlParam, {
+    const upstream = await axios6.get(urlParam, {
       responseType: "stream",
       timeout: 3e4,
       headers: {
@@ -930,7 +1563,7 @@ router2.get("/proxy", async (req, res) => {
       upstream.data.on("data", (chunk) => chunks.push(chunk));
       upstream.data.on("end", () => {
         const body = Buffer.concat(chunks).toString("utf8");
-        const encodedReferer = encodeURIComponent(referer ?? "");
+        const encodedReferer = encodeURIComponent(referer ?? "https://play.echovideo.ru/");
         const baseUrl = urlParam.substring(0, urlParam.lastIndexOf("/") + 1);
         const rewritten = body.split("\n").map((line) => {
           const trimmed = line.trim();
@@ -957,6 +1590,10 @@ router2.get("/proxy", async (req, res) => {
     }
   } catch (err) {
     const e = err;
+    req.log.error(
+      { url: urlParam.slice(0, 80), error: e.message, status: e.response?.status },
+      "proxy request failed"
+    );
     if (!res.headersSent) {
       res.status(502).json({
         error: "Proxy failed",
@@ -1004,7 +1641,9 @@ var app_default = app;
 // src/index.ts
 var rawPort = process.env["PORT"];
 if (!rawPort) {
-  throw new Error("PORT environment variable is required but was not provided.");
+  throw new Error(
+    "PORT environment variable is required but was not provided."
+  );
 }
 var port = Number(rawPort);
 if (Number.isNaN(port) || port <= 0) {
@@ -1015,6 +1654,6 @@ app_default.listen(port, (err) => {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
   }
-  logger.info({ port }, "Aniwaves API server listening");
+  logger.info({ port }, "Server listening");
 });
 //# sourceMappingURL=index.mjs.map

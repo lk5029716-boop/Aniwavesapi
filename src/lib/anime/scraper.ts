@@ -1,5 +1,5 @@
 /**
- * Aniwaves.ru scraper — real API endpoints.
+ * Aniwaves.ru scraper — real API discovered via site inspection.
  *
  * Endpoints (all require X-Requested-With: XMLHttpRequest):
  *   Search:    GET /ajax/anime/search?keyword={q}
@@ -49,7 +49,12 @@ const ajaxClient = axios.create({
 export async function searchAnime(q: string): Promise<AnimeSearchResult[]> {
   const cacheKey = `search:${q}`;
   const cached = cacheGet<AnimeSearchResult[]>(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    logger.debug({ q }, "search cache hit");
+    return cached;
+  }
+
+  logger.info({ q }, "searching anime via /ajax/anime/search");
 
   const resp = await ajaxClient.get("/ajax/anime/search", {
     params: { keyword: q },
@@ -61,9 +66,14 @@ export async function searchAnime(q: string): Promise<AnimeSearchResult[]> {
   };
 
   const html =
-    typeof data.result === "string" ? data.result : (data.result?.html ?? "");
+    typeof data.result === "string"
+      ? data.result
+      : (data.result?.html ?? "");
 
-  if (!html) return [];
+  if (!html) {
+    logger.warn({ q, status: data.status }, "search returned no HTML");
+    return [];
+  }
 
   const $ = cheerio.load(html);
   const results: AnimeSearchResult[] = [];
@@ -88,6 +98,7 @@ export async function searchAnime(q: string): Promise<AnimeSearchResult[]> {
   });
 
   cacheSet(cacheKey, results, 300);
+  logger.info({ q, count: results.length }, "search complete");
   return results;
 }
 
@@ -100,9 +111,13 @@ export async function getNumericId(animeId: string): Promise<string | null> {
 
   const resp = await client.get(`/watch/${animeId}`);
   const $ = cheerio.load(resp.data as string);
+
   const numericId = $("[data-id]").first().attr("data-id") ?? null;
 
-  if (numericId) cacheSet(cacheKey, numericId, 86400);
+  if (numericId) {
+    cacheSet(cacheKey, numericId, 86400);
+  }
+
   return numericId;
 }
 
@@ -111,7 +126,12 @@ export async function getNumericId(animeId: string): Promise<string | null> {
 export async function getAnimeDetails(id: string): Promise<AnimeDetails> {
   const cacheKey = `details:${id}`;
   const cached = cacheGet<AnimeDetails>(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    logger.debug({ id }, "details cache hit");
+    return cached;
+  }
+
+  logger.info({ id }, "fetching anime details from /watch/:id");
 
   const resp = await client.get(`/watch/${id}`);
   const $ = cheerio.load(resp.data as string);
@@ -152,6 +172,7 @@ export async function getAnimeDetails(id: string): Promise<AnimeDetails> {
   });
 
   const filmInfoMap: Record<string, string> = {};
+
   $("div").each((_, el) => {
     const text = $(el).clone().children("span").remove().end().text().trim();
     const cleanLabel = text.replace(/:\s*$/, "").trim().toLowerCase();
@@ -160,18 +181,9 @@ export async function getAnimeDetails(id: string): Promise<AnimeDetails> {
     if (val) filmInfoMap[cleanLabel] = val;
   });
 
-  const genreDiv = $("div")
-    .filter((_, el) => {
-      return $(el)
-        .clone()
-        .children()
-        .remove()
-        .end()
-        .text()
-        .trim()
-        .startsWith("Genres:");
-    })
-    .first();
+  const genreDiv = $("div").filter((_, el) => {
+    return $(el).clone().children().remove().end().text().trim().startsWith("Genres:");
+  }).first();
   if (genreDiv.length) {
     genres.length = 0;
     genreDiv.find("a").each((_, el) => {
@@ -186,6 +198,25 @@ export async function getAnimeDetails(id: string): Promise<AnimeDetails> {
     totalCount = parseInt(epMatch[0] ?? "0", 10) || totalCount;
   }
 
+  if (!totalCount) {
+    const jsonLdText = $('script[type="application/ld+json"]').text();
+    if (jsonLdText) {
+      try {
+        const jsonLd = JSON.parse(jsonLdText) as {
+          "@graph"?: Array<{ numberOfEpisodes?: number }>;
+          numberOfEpisodes?: number;
+        };
+        const graph = jsonLd["@graph"] ?? [];
+        for (const node of graph) {
+          if (node.numberOfEpisodes) totalCount = node.numberOfEpisodes;
+        }
+        if (!totalCount && jsonLd.numberOfEpisodes) totalCount = jsonLd.numberOfEpisodes;
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   const mainType = $("span.wa_type").first().text().trim();
 
   const details: AnimeDetails = {
@@ -193,14 +224,15 @@ export async function getAnimeDetails(id: string): Promise<AnimeDetails> {
     title,
     poster,
     description,
-    type: mainType || filmInfoMap["type"] || filmInfoMap["format"] || "Unknown",
-    status: filmInfoMap["status"] ?? "Unknown",
-    aired:
+    type: (mainType || filmInfoMap["type"] || filmInfoMap["format"] || "Unknown"),
+    status: (filmInfoMap["status"] ?? "Unknown"),
+    aired: (
       $("[itemprop='dateCreated']").text().trim() ||
       filmInfoMap["date aired"] ||
       filmInfoMap["aired"] ||
       filmInfoMap["premiered"] ||
-      "Unknown",
+      "Unknown"
+    ),
     genres,
     episodes: {
       sub: subCount || totalCount,
@@ -210,6 +242,7 @@ export async function getAnimeDetails(id: string): Promise<AnimeDetails> {
   };
 
   cacheSet(cacheKey, details, 1800);
+  logger.info({ id, title }, "details fetched");
   return details;
 }
 
@@ -218,18 +251,30 @@ export async function getAnimeDetails(id: string): Promise<AnimeDetails> {
 export async function getEpisodes(animeId: string): Promise<Episode[]> {
   const cacheKey = `episodes:${animeId}`;
   const cached = cacheGet<Episode[]>(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    logger.debug({ animeId }, "episodes cache hit");
+    return cached;
+  }
+
+  logger.info({ animeId }, "fetching episode list");
 
   const numericId = await getNumericId(animeId);
-  if (!numericId) return [];
+  if (!numericId) {
+    logger.warn({ animeId }, "could not resolve numeric ID");
+    return [];
+  }
 
   const resp = await ajaxClient.get(`/ajax/episode/list/${numericId}`, {
     headers: { Referer: `${BASE_URL}/watch/${animeId}` },
   });
 
   const data = resp.data as { status: number; result?: string };
+
   const html = data.result ?? "";
-  if (!html) return [];
+  if (!html) {
+    logger.warn({ animeId, numericId, status: data.status }, "episode list returned no html");
+    return [];
+  }
 
   const $ = cheerio.load(html);
   const episodes: Episode[] = [];
@@ -248,6 +293,7 @@ export async function getEpisodes(animeId: string): Promise<Episode[]> {
 
   episodes.sort((a, b) => a.number - b.number);
   cacheSet(cacheKey, episodes, 600);
+  logger.info({ animeId, count: episodes.length }, "episodes fetched");
   return episodes;
 }
 
@@ -260,12 +306,20 @@ export async function getServers(
 ): Promise<Server[]> {
   const cacheKey = `servers:${animeId}:${ep}:${type}`;
   const cached = cacheGet<Server[]>(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    logger.debug({ animeId, ep, type }, "servers cache hit");
+    return cached;
+  }
+
+  logger.info({ animeId, ep, type }, "fetching server list");
 
   const episodes = await getEpisodes(animeId);
   const episode = episodes.find((e) => e.number === ep);
 
-  if (!episode) return [];
+  if (!episode) {
+    logger.warn({ animeId, ep }, "episode not found");
+    return [];
+  }
 
   const [animeNumId, epsNum] = episode.id.split("&eps=");
   const resp = await ajaxClient.get("/ajax/server/list", {
@@ -275,7 +329,10 @@ export async function getServers(
 
   const data = resp.data as { status: number; result?: string };
   const html = data.result ?? "";
-  if (!html) return [];
+  if (!html) {
+    logger.warn({ episodeId: episode.id, type }, "server list returned no html");
+    return [];
+  }
 
   const $ = cheerio.load(html);
   const servers: Server[] = [];
@@ -299,6 +356,7 @@ export async function getServers(
   });
 
   cacheSet(cacheKey, servers, 300);
+  logger.info({ animeId, ep, type, count: servers.length }, "servers fetched");
   return servers;
 }
 
@@ -318,6 +376,8 @@ export async function getEmbedUrl(
   linkId: string,
   refererAnimeId?: string
 ): Promise<SourcesResult | null> {
+  logger.info({ linkId: linkId.slice(0, 40) }, "resolving embed URL from /ajax/sources");
+
   const resp = await ajaxClient.get("/ajax/sources", {
     params: { id: linkId },
     headers: {
@@ -332,6 +392,19 @@ export async function getEmbedUrl(
     result?: SourcesResult;
   };
 
-  if (!data.result?.url) return null;
+  logger.debug(
+    {
+      status: data.status,
+      url: data.result?.url?.slice(0, 80),
+      sourcesCount: data.result?.sources?.length ?? 0,
+    },
+    "sources endpoint response"
+  );
+
+  if (!data.result?.url) {
+    logger.warn({ linkId: linkId.slice(0, 40) }, "no URL in sources result");
+    return null;
+  }
+
   return data.result;
 }

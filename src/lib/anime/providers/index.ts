@@ -1,11 +1,9 @@
-/**
- * Provider router — dispatches embed URLs to the correct extractor
- * based on server name or embed host.
- */
 import { logger } from "../../logger.js";
 import { extractVidplay, isVidplayHost } from "./vidplay.js";
-import { extractByfms, isByfmsHost } from "./byfms.js";
-import { extractDghg, isDghgHost } from "./dghg.js";
+import { extractMegacloud, isMegacloudHost } from "./megacloud.js";
+import { extractEchovideo, isEchovideoHost } from "./echovideo.js";
+import { extractWeneverbeenfree, isWeneverbeenfreeHost } from "./weneverbeenfree.js";
+import { extractDghg, isPlaymogoHost } from "./dghg.js";
 import type { StreamSource } from "../types.js";
 
 export async function extractStream(
@@ -16,32 +14,52 @@ export async function extractStream(
   const lowerName = serverName.toLowerCase();
 
   logger.info(
-    { embedUrl: embedUrl.slice(0, 90), serverName },
+    { embedUrl: embedUrl.slice(0, 80), serverName },
     "dispatching to provider extractor"
   );
 
-  // ── DGHG (PlayMogo / DoodStream) ──────────────────────────────────────────
+  // DGHG / myvidplay.com — pass_md5 HTTP method
   if (
-    isDghgHost(embedUrl) ||
+    isPlaymogoHost(embedUrl) ||
     lowerName.includes("dghg") ||
-    lowerName.includes("playmogo") ||
-    lowerName.includes("dood")
+    lowerName.includes("myvidplay")
   ) {
-    logger.info({ serverName }, "routing to DGHG extractor");
+    logger.info({ serverName }, "routing to DGHG/PlayMogo extractor");
     return extractDghg(embedUrl, skipData);
   }
 
-  // ── BYFMS (WeneverBeenFree) ───────────────────────────────────────────────
+  // weneverbeenfree.com (BYFMS server on Aniwaves)
   if (
-    isByfmsHost(embedUrl) ||
+    isWeneverbeenfreeHost(embedUrl) ||
     lowerName.includes("byfms") ||
     lowerName.includes("weneverbeenfree")
   ) {
-    logger.info({ serverName }, "routing to BYFMS extractor");
-    return extractByfms(embedUrl, skipData);
+    logger.info({ serverName }, "routing to WeneverBeenFree extractor");
+    return extractWeneverbeenfree(embedUrl, skipData);
   }
 
-  // ── Vidplay ───────────────────────────────────────────────────────────────
+  // Echovideo (Aniwaves primary provider — Vidplay server also routes here)
+  if (
+    isEchovideoHost(embedUrl) ||
+    lowerName.includes("echo")
+  ) {
+    logger.info({ serverName }, "routing to Echovideo extractor");
+    return extractEchovideo(embedUrl, skipData);
+  }
+
+  // MegaCloud / RapidCloud / RabbitStream
+  if (
+    isMegacloudHost(embedUrl) ||
+    lowerName.includes("megacloud") ||
+    lowerName.includes("rapidcloud") ||
+    lowerName.includes("rabbitstream") ||
+    lowerName.includes("mycloud")
+  ) {
+    logger.info({ serverName }, "routing to MegaCloud extractor");
+    return extractMegacloud(embedUrl);
+  }
+
+  // Vidplay and its mirrors (VidCloud)
   if (
     isVidplayHost(embedUrl) ||
     lowerName.includes("vidplay") ||
@@ -51,25 +69,27 @@ export async function extractStream(
     return extractVidplay(embedUrl);
   }
 
-  // ── Unknown — try all extractors ──────────────────────────────────────────
+  // Unknown provider — try embed-N pattern (Echovideo-style) first, then others
   logger.warn(
-    { serverName, embedUrl: embedUrl.slice(0, 90) },
-    "unknown provider — trying all extractors"
+    { serverName, embedUrl: embedUrl.slice(0, 80) },
+    "unknown provider, trying all extractors in order"
   );
 
-  const attempts = [
-    () => extractDghg(embedUrl, skipData),
-    () => extractVidplay(embedUrl),
-    () => extractByfms(embedUrl, skipData),
-  ];
-
-  for (const attempt of attempts) {
-    try {
-      const result = await attempt();
-      if (result?.m3u8) return result;
-    } catch { /* try next */ }
+  // Check if URL looks like an echovideo embed (has /embed-N/ in path)
+  if (/\/embed-\d+\//.test(embedUrl)) {
+    const echoResult = await extractEchovideo(embedUrl, skipData);
+    if (echoResult?.m3u8) return echoResult;
   }
 
-  logger.error({ serverName, embedUrl: embedUrl.slice(0, 90) }, "all extractors failed");
+  const vidplayResult = await extractVidplay(embedUrl);
+  if (vidplayResult?.m3u8) return vidplayResult;
+
+  const megacloudResult = await extractMegacloud(embedUrl);
+  if (megacloudResult?.m3u8) return megacloudResult;
+
+  const wnbfResult = await extractWeneverbeenfree(embedUrl, skipData);
+  if (wnbfResult?.m3u8) return wnbfResult;
+
+  logger.error({ serverName, embedUrl: embedUrl.slice(0, 80) }, "all extractors failed");
   return null;
 }
