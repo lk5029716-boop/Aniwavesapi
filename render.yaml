@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: aniwaves-api
+    name: aniwavesapis
     runtime: docker
     region: oregon
     plan: free

@@ -61,7 +61,8 @@ async function fetchEmbedPage(embedUrl: string): Promise<string | null> {
     await browser.close();
     return html;
   } catch (err) {
-    logger.error({ error: (err as Error).message }, "[DGHG] Playwright fetch failed");
+    const e = err as Error;
+    logger.error({ error: e.message, stack: e.stack }, "[DGHG] Playwright fetch failed");
     if (browser) await browser.close().catch(() => {});
     return null;
   }
