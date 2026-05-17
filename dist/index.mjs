@@ -1428,6 +1428,7 @@ var DOOD_HOSTS = [
   "dood.watch"
 ];
 var UA2 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var PROXY_URL = process.env["DGHG_PROXY"] || null;
 function isPlaymogoHost(url) {
   try {
     const host = new URL(url).hostname;
@@ -1436,27 +1437,33 @@ function isPlaymogoHost(url) {
     return false;
   }
 }
+function buildCurlArgs(url, referer) {
+  const args = [
+    "-s",
+    "-L",
+    "-A",
+    UA2,
+    "-H",
+    "Accept: text/html,*/*",
+    "-H",
+    `Referer: ${referer}`,
+    "--max-redirs",
+    "5",
+    "--connect-timeout",
+    "15",
+    "--max-time",
+    "30"
+  ];
+  if (PROXY_URL) {
+    args.push("-x", PROXY_URL);
+  }
+  args.push("-w", "\n%{http_code}", url);
+  return args;
+}
 function tryCurl(url, referer) {
   try {
-    const result = execFileSync("curl", [
-      "-s",
-      "-L",
-      "-A",
-      UA2,
-      "-H",
-      "Accept: text/html,*/*",
-      "-H",
-      `Referer: ${referer}`,
-      "--max-redirs",
-      "5",
-      "--connect-timeout",
-      "15",
-      "--max-time",
-      "30",
-      "-w",
-      "\n%{http_code}",
-      url
-    ], { encoding: "utf8", timeout: 35e3 });
+    const args = buildCurlArgs(url, referer);
+    const result = execFileSync("curl", args, { encoding: "utf8", timeout: 35e3 });
     const lines = result.trim().split("\n");
     const httpCode = lines[lines.length - 1];
     const body = lines.slice(0, -1).join("\n");
@@ -1470,7 +1477,7 @@ function tryCurl(url, referer) {
 }
 async function tryAxios(url, referer) {
   try {
-    const resp = await axios6.get(url, {
+    const config = {
       timeout: 15e3,
       headers: {
         "User-Agent": UA2,
@@ -1478,7 +1485,15 @@ async function tryAxios(url, referer) {
         Referer: referer
       },
       maxRedirects: 5
-    });
+    };
+    if (PROXY_URL) {
+      const proxyUrl = new URL(PROXY_URL);
+      config["proxy"] = {
+        host: proxyUrl.hostname,
+        port: parseInt(proxyUrl.port || "8080")
+      };
+    }
+    const resp = await axios6.get(url, config);
     return { body: resp.data, error: null };
   } catch (err) {
     const e = err;
@@ -1486,19 +1501,33 @@ async function tryAxios(url, referer) {
   }
 }
 async function extractDghg(embedUrl, skipData) {
-  const debug = [];
-  debug.push(`embedUrl=${embedUrl}`);
-  const step1 = tryCurl(embedUrl, "https://aniwaves.ru/");
-  debug.push(`curl: error=${step1.error || "none"}, bodyLen=${step1.body.length}`);
-  if (step1.error || !step1.body) {
-    const step1a = await tryAxios(embedUrl, "https://aniwaves.ru/");
-    debug.push(`axios: error=${step1a.error || "none"}, bodyLen=${step1a.body.length}`);
-    if (step1a.error || !step1a.body) {
-      logger.error({ debug: debug.join("; ") }, "[DGHG] Step 1 FAILED");
-      return { type: "direct", provider: "dghg", m3u8: null, subtitles: [], thumbnails: null, intro: null, outro: null, _dghgDebug: debug.join("; ") };
+  logger.info({ embedUrl: embedUrl.slice(0, 100), proxy: !!PROXY_URL }, "[DGHG] starting extraction");
+  let html = "";
+  let step1Error = null;
+  const curlResult = tryCurl(embedUrl, "https://aniwaves.ru/");
+  if (!curlResult.error && curlResult.body) {
+    html = curlResult.body;
+  } else {
+    const axiosResult = await tryAxios(embedUrl, "https://aniwaves.ru/");
+    if (!axiosResult.error && axiosResult.body) {
+      html = axiosResult.body;
+    } else {
+      step1Error = `curl: ${curlResult.error}, axios: ${axiosResult.error}`;
     }
   }
-  const html = step1.body || "";
+  if (!html || step1Error) {
+    logger.error({ error: step1Error }, "[DGHG] Step 1 FAILED");
+    return {
+      type: "direct",
+      provider: "dghg",
+      m3u8: null,
+      subtitles: [],
+      thumbnails: null,
+      intro: null,
+      outro: null,
+      _dghgDebug: step1Error || "empty"
+    };
+  }
   let passMd5Path = null;
   const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
   if (passMd5Match) passMd5Path = passMd5Match[1];
@@ -1511,27 +1540,40 @@ async function extractDghg(embedUrl, skipData) {
     const tokenMatch = html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/);
     token = tokenMatch?.[1] ?? null;
   }
-  debug.push(`passMd5=${!!passMd5Path}, token=${token?.slice(0, 10) || "none"}`);
   if (!passMd5Path || !token) {
-    logger.error({ debug: debug.join("; ") }, "[DGHG] Step 2 FAILED");
-    return { type: "direct", provider: "dghg", m3u8: null, subtitles: [], thumbnails: null, intro: null, outro: null, _dghgDebug: debug.join("; ") };
+    return {
+      type: "direct",
+      provider: "dghg",
+      m3u8: null,
+      subtitles: [],
+      thumbnails: null,
+      intro: null,
+      outro: null,
+      _dghgDebug: `no pass_md5: passMd5=${!!passMd5Path}, token=${!!token}`
+    };
   }
   const urlObj = new URL(embedUrl);
   const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
-  const step3 = tryCurl(passMd5Url, embedUrl);
-  debug.push(`pass_md5 curl: error=${step3.error || "none"}, body=${step3.body.slice(0, 80)}`);
-  if (step3.error || !step3.body || !step3.body.startsWith("http")) {
-    const step3a = await tryAxios(passMd5Url, embedUrl);
-    debug.push(`pass_md5 axios: error=${step3a.error || "none"}, body=${step3a.body.slice(0, 80)}`);
-    if (step3a.error || !step3a.body || !step3a.body.startsWith("http")) {
-      logger.error({ debug: debug.join("; ") }, "[DGHG] Step 3 FAILED");
-      return { type: "direct", provider: "dghg", m3u8: null, subtitles: [], thumbnails: null, intro: null, outro: null, _dghgDebug: debug.join("; ") };
+  let cdnBaseUrl = "";
+  const curlPassMd5 = tryCurl(passMd5Url, embedUrl);
+  if (!curlPassMd5.error && curlPassMd5.body && curlPassMd5.body.startsWith("http")) {
+    cdnBaseUrl = curlPassMd5.body;
+  } else {
+    const axiosPassMd5 = await tryAxios(passMd5Url, embedUrl);
+    if (!axiosPassMd5.error && axiosPassMd5.body && axiosPassMd5.body.startsWith("http")) {
+      cdnBaseUrl = axiosPassMd5.body;
+    } else {
+      return {
+        type: "direct",
+        provider: "dghg",
+        m3u8: null,
+        subtitles: [],
+        thumbnails: null,
+        intro: null,
+        outro: null,
+        _dghgDebug: `pass_md5 failed: curl=${curlPassMd5.error}, axios=${axiosPassMd5.error}`
+      };
     }
-  }
-  const cdnBaseUrl = (step3.body || "").startsWith("http") ? step3.body : "";
-  if (!cdnBaseUrl) {
-    logger.error({ debug: debug.join("; ") }, "[DGHG] Step 3 FAILED - no CDN");
-    return { type: "direct", provider: "dghg", m3u8: null, subtitles: [], thumbnails: null, intro: null, outro: null, _dghgDebug: debug.join("; ") };
   }
   const expiry = Date.now();
   const finalUrl = `${cdnBaseUrl}?token=${token}&expiry=${expiry}`;
