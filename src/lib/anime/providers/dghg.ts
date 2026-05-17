@@ -29,10 +29,6 @@ function isPlaymogoHost(url: string): boolean {
   }
 }
 
-function makeDghgDebug(step: number, reason: string, extra?: Record<string, unknown>) {
-  return { _dghgDebug: { step, reason, ...extra } };
-}
-
 export async function extractDghg(
   embedUrl: string,
   skipData?: { intro?: [number, number]; outro?: [number, number] }
@@ -52,36 +48,55 @@ export async function extractDghg(
         Accept: "text/html,*/*",
         Referer: "https://aniwaves.ru/",
       },
+      // Don't follow redirects automatically — we need to see the response
+      maxRedirects: 5,
+      validateStatus: (status) => status < 400,
     });
     html = resp.data as string;
   } catch (err) {
-    const e = err as Error & { response?: { status: number } };
+    const e = err as Error & { response?: { status: number; data?: string } };
     logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 1 FAILED — could not fetch embed page");
-    return makeDghgDebug(1, e.message, { status: e.response?.status }) as unknown as StreamSource;
+    return null;
   }
 
   logger.debug({ htmlLen: html.length }, "[DGHG] fetched embed page");
 
+  // Check if we got a Cloudflare challenge page instead of the embed
+  const isCfChallenge = html.includes("cf-challenge") || html.includes("challenge-platform") || html.includes("Just a moment");
+  if (isCfChallenge) {
+    logger.error({ htmlLen: html.length }, "[DGHG] Step 1 BLOCKED — got Cloudflare challenge page");
+    return null;
+  }
+
   // Step 2: Extract pass_md5 path from HTML
   // Pattern: $.get('/pass_md5/{file_id}-{random}/{token}', function(data)
   let passMd5Path: string | null = null;
+
+  // Primary regex: $.get('/pass_md5/...', function(data)
   const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'\"]+)['"]\s*,/);
   if (passMd5Match) {
     passMd5Path = passMd5Match[1];
   }
 
+  // Fallback: look for pass_md5/ pattern directly
   if (!passMd5Path) {
-    // Try alternative patterns
-    const altMatch = html.match(/pass_md5\/([a-f0-9]+-\d+-\d+-\d+-[a-f0-9]+\/[^'"\s]+)/);
+    const altMatch = html.match(/pass_md5\/([a-f0-9]+-\d+-\d+-\d+-[a-f0-9]+\/[^'"\s,)]+)/);
     if (altMatch) {
       passMd5Path = altMatch[1];
     }
   }
 
+  // Fallback 2: look for any pass_md5/ path
   if (!passMd5Path) {
-    const htmlSnippet = html.slice(0, 300);
-    logger.error({ htmlLen: html.length, htmlSnippet }, "[DGHG] Step 2 FAILED — no pass_md5 path found");
-    return makeDghgDebug(2, "no pass_md5 in HTML", { htmlLen: html.length, htmlSnippet }) as unknown as StreamSource;
+    const altMatch2 = html.match(/pass_md5\/([^'"\s,)]+)/);
+    if (altMatch2) {
+      passMd5Path = altMatch2[1];
+    }
+  }
+
+  if (!passMd5Path) {
+    logger.error({ htmlLen: html.length }, "[DGHG] Step 2 FAILED — no pass_md5 path found in HTML");
+    return null;
   }
 
   // Extract token from the pass_md5 path (last segment after /)
@@ -90,7 +105,7 @@ export async function extractDghg(
 
   if (!token) {
     logger.error("[DGHG] Step 2b FAILED — could not extract token");
-    return makeDghgDebug(2, "no token in path") as unknown as StreamSource;
+    return null;
   }
 
   logger.debug({ passMd5Path, token: token.slice(0, 20) }, "[DGHG] extracted pass_md5 path");
@@ -107,17 +122,18 @@ export async function extractDghg(
         Referer: embedUrl,
       },
       maxRedirects: 5,
+      validateStatus: (status) => status < 400,
     });
     cdnBaseUrl = (resp.data as string).trim();
   } catch (err) {
     const e = err as Error & { response?: { status: number } };
     logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 3 FAILED — pass_md5 request failed");
-    return makeDghgDebug(3, e.message, { status: e.response?.status, passMd5Url }) as unknown as StreamSource;
+    return null;
   }
 
   if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
     logger.error({ cdnBase: cdnBaseUrl?.slice(0, 200) }, "[DGHG] Step 3 FAILED — invalid CDN URL");
-    return makeDghgDebug(3, "invalid CDN URL", { cdnBase: cdnBaseUrl?.slice(0, 200) }) as unknown as StreamSource;
+    return null;
   }
 
   logger.debug({ cdnBase: cdnBaseUrl.slice(0, 100) }, "[DGHG] got CDN base URL");
