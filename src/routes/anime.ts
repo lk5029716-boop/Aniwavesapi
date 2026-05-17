@@ -447,6 +447,18 @@ router.get("/debug/dghg", async (req, res): Promise<void> => {
         steps.step5_passMd5Any = html.includes("pass_md5");
         steps.step5_getAny = html.includes("$.get");
         steps.step5_htmlSnippet = html.slice(0, 300);
+
+        // Search for all $.get calls
+        const getCalls = html.match(/\$\.get\s*\([^)]+\)/g);
+        steps.step5_getCalls = getCalls?.map((c: string) => c.slice(0, 80)) ?? [];
+
+        // Search for file_id or token patterns
+        const fileIdMatch = html.match(/file_id['":\s]+([a-zA-Z0-9_-]+)/);
+        steps.step5_fileId = fileIdMatch?.[1] ?? null;
+
+        // Look for script src
+        const scriptSrcs = html.match(/<script[^>]+src="([^"]+)"/g);
+        steps.step5_scripts = scriptSrcs?.map((s: string) => s.slice(0, 80)) ?? [];
       }
 
       await browser.close();
