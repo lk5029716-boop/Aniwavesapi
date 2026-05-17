@@ -1,8 +1,12 @@
 /**
  * DGHG / PlayMogo / DoodStream provider extractor.
  *
+ * Uses Playwright (Chromium) to fetch the embed page because myvidplay.com
+ * blocks direct HTTP requests (axios/curl) with 403. Chromium looks like a
+ * real browser and passes the Cloudflare check.
+ *
  * Flow:
- *   1. GET embed page HTML → extract pass_md5 path and token
+ *   1. Use Playwright to load embed page → extract pass_md5 path from HTML
  *   2. GET /pass_md5/{file_id}-{random}/{token} → get CDN base URL
  *   3. Construct final URL: {cdnUrl}{random10chars}?token={token}&expiry={timestamp}
  *   4. Return direct MP4 URL
@@ -38,38 +42,43 @@ export async function extractDghg(
 
   logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
 
-  // Step 1: Fetch embed page HTML to extract pass_md5 path
+  // Step 1: Use Playwright to fetch embed page HTML
+  // myvidplay.com blocks direct HTTP requests (403), so we need a real browser
   let html: string;
   try {
-    const resp = await axios.get(embedUrl, {
-      timeout: 15000,
-      headers: {
-        "User-Agent": UA,
-        Accept: "text/html,*/*",
+    const { chromium } = await import("playwright");
+    const browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+    const context = await browser.newContext({
+      userAgent: UA,
+      extraHTTPHeaders: {
         Referer: "https://aniwaves.ru/",
       },
-      // Don't follow redirects automatically — we need to see the response
-      maxRedirects: 5,
-      validateStatus: (status) => status < 400,
     });
-    html = resp.data as string;
+    const page = await context.newPage();
+
+    // Navigate and wait for the page to load
+    await page.goto(embedUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 15000,
+    });
+
+    // Wait a moment for any dynamic content
+    await page.waitForTimeout(2000);
+
+    html = await page.content();
+    await browser.close();
+
+    logger.debug({ htmlLen: html.length }, "[DGHG] Playwright fetched embed page");
   } catch (err) {
-    const e = err as Error & { response?: { status: number; data?: string } };
-    logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 1 FAILED — could not fetch embed page");
-    return null;
-  }
-
-  logger.debug({ htmlLen: html.length }, "[DGHG] fetched embed page");
-
-  // Check if we got a Cloudflare challenge page instead of the embed
-  const isCfChallenge = html.includes("cf-challenge") || html.includes("challenge-platform") || html.includes("Just a moment");
-  if (isCfChallenge) {
-    logger.error({ htmlLen: html.length }, "[DGHG] Step 1 BLOCKED — got Cloudflare challenge page");
+    const e = err as Error;
+    logger.error({ error: e.message }, "[DGHG] Step 1 FAILED — Playwright could not fetch embed page");
     return null;
   }
 
   // Step 2: Extract pass_md5 path from HTML
-  // Pattern: $.get('/pass_md5/{file_id}-{random}/{token}', function(data)
   let passMd5Path: string | null = null;
 
   // Primary regex: $.get('/pass_md5/...', function(data)
@@ -122,7 +131,6 @@ export async function extractDghg(
         Referer: embedUrl,
       },
       maxRedirects: 5,
-      validateStatus: (status) => status < 400,
     });
     cdnBaseUrl = (resp.data as string).trim();
   } catch (err) {
@@ -139,7 +147,6 @@ export async function extractDghg(
   logger.debug({ cdnBase: cdnBaseUrl.slice(0, 100) }, "[DGHG] got CDN base URL");
 
   // Step 4: Construct final URL matching the makePlay() function from embed3.js
-  // makePlay() generates 10 random chars + "?token={token}&expiry={timestamp}"
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let randomSuffix = "";
   for (let i = 0; i < 10; i++) {

@@ -1,63 +1,125 @@
-var __defProp = Object.defineProperty;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
+// src/app.ts
+import express from "express";
+import cors from "cors";
+import pinoHttp from "pino-http";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// src/routes/index.ts
+import { Router as Router3 } from "express";
+
+// src/routes/health.ts
+import { Router } from "express";
+import { execSync } from "child_process";
+var router = Router();
+router.get("/health", async (_req, res) => {
+  let curlAvailable = false;
+  let chromiumPath = null;
+  let playwrightVersion = null;
+  let chromiumLaunchTest = null;
+  try {
+    execSync("which curl", { encoding: "utf8", timeout: 5e3 });
+    curlAvailable = true;
+  } catch {
+    curlAvailable = false;
+  }
+  try {
+    chromiumPath = execSync(
+      "find /ms-playwright -name chrome -type f 2>/dev/null | head -1",
+      { encoding: "utf8", timeout: 5e3 }
+    ).trim();
+  } catch {
+    chromiumPath = null;
+  }
+  try {
+    const pw = await import("playwright");
+    playwrightVersion = pw?.chromium ? "available" : "unknown";
+  } catch {
+    playwrightVersion = "not available";
+  }
+  if (chromiumPath) {
+    try {
+      const { chromium } = await import("playwright");
+      const browser = await chromium.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"]
+      });
+      await browser.close();
+      chromiumLaunchTest = "success";
+    } catch (e) {
+      chromiumLaunchTest = `failed: ${e.message.slice(0, 100)}`;
+    }
+  }
+  res.json({
+    status: "ok",
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    curl: curlAvailable,
+    node: process.version,
+    env: process.env.NODE_ENV || "development",
+    chromium: chromiumPath || "not found",
+    playwright: playwrightVersion,
+    chromiumLaunchTest
+  });
+});
+var health_default = router;
+
+// src/routes/anime.ts
+import { Router as Router2 } from "express";
+import axios7 from "axios";
+
+// src/lib/anime/scraper.ts
+import axios from "axios";
+import * as cheerio from "cheerio";
 
 // src/lib/logger.ts
 import pino from "pino";
-var isProduction, logger;
-var init_logger = __esm({
-  "src/lib/logger.ts"() {
-    isProduction = process.env.NODE_ENV === "production";
-    logger = pino({
-      level: process.env.LOG_LEVEL ?? "info",
-      redact: [
-        "req.headers.authorization",
-        "req.headers.cookie",
-        "res.headers['set-cookie']"
-      ],
-      ...isProduction ? {} : {
-        transport: {
-          target: "pino-pretty",
-          options: { colorize: true }
-        }
-      }
-    });
+var isProduction = process.env.NODE_ENV === "production";
+var logger = pino({
+  level: process.env.LOG_LEVEL ?? "info",
+  redact: [
+    "req.headers.authorization",
+    "req.headers.cookie",
+    "res.headers['set-cookie']"
+  ],
+  ...isProduction ? {} : {
+    transport: {
+      target: "pino-pretty",
+      options: { colorize: true }
+    }
   }
 });
 
 // src/lib/anime/cache.ts
 import NodeCache from "node-cache";
+var cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 function cacheGet(key) {
   return cache.get(key);
 }
 function cacheSet(key, value, ttl = 300) {
   cache.set(key, value, ttl);
 }
-var cache;
-var init_cache = __esm({
-  "src/lib/anime/cache.ts"() {
-    cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
-  }
-});
 
 // src/lib/anime/scraper.ts
-var scraper_exports = {};
-__export(scraper_exports, {
-  getAnimeDetails: () => getAnimeDetails,
-  getEmbedUrl: () => getEmbedUrl,
-  getEpisodes: () => getEpisodes,
-  getNumericId: () => getNumericId,
-  getServers: () => getServers,
-  searchAnime: () => searchAnime
+var BASE_URL = "https://aniwaves.ru";
+var client = axios.create({
+  baseURL: BASE_URL,
+  timeout: 15e3,
+  headers: {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9"
+  }
 });
-import axios from "axios";
-import * as cheerio from "cheerio";
+var ajaxClient = axios.create({
+  baseURL: BASE_URL,
+  timeout: 15e3,
+  headers: {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    Accept: "application/json, text/javascript, */*; q=0.01",
+    "X-Requested-With": "XMLHttpRequest",
+    Referer: BASE_URL
+  }
+});
 async function searchAnime(q) {
   const cacheKey = `search:${q}`;
   const cached = cacheGet(cacheKey);
@@ -299,255 +361,8 @@ async function getEmbedUrl(linkId, refererAnimeId) {
   }
   return data.result;
 }
-var BASE_URL, client, ajaxClient;
-var init_scraper = __esm({
-  "src/lib/anime/scraper.ts"() {
-    init_logger();
-    init_cache();
-    BASE_URL = "https://aniwaves.ru";
-    client = axios.create({
-      baseURL: BASE_URL,
-      timeout: 15e3,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9"
-      }
-    });
-    ajaxClient = axios.create({
-      baseURL: BASE_URL,
-      timeout: 15e3,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "application/json, text/javascript, */*; q=0.01",
-        "X-Requested-With": "XMLHttpRequest",
-        Referer: BASE_URL
-      }
-    });
-  }
-});
-
-// src/lib/anime/providers/dghg.ts
-var dghg_exports = {};
-__export(dghg_exports, {
-  extractDghg: () => extractDghg,
-  isPlaymogoHost: () => isPlaymogoHost
-});
-import axios6 from "axios";
-function isPlaymogoHost(url) {
-  try {
-    const host = new URL(url).hostname;
-    return DOOD_HOSTS.some((h) => host.includes(h));
-  } catch {
-    return false;
-  }
-}
-async function extractDghg(embedUrl, skipData) {
-  const urlObj = new URL(embedUrl);
-  const host = urlObj.hostname;
-  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
-  let html;
-  try {
-    const resp = await axios6.get(embedUrl, {
-      timeout: 15e3,
-      headers: {
-        "User-Agent": UA2,
-        Accept: "text/html,*/*",
-        Referer: "https://aniwaves.ru/"
-      },
-      // Don't follow redirects automatically — we need to see the response
-      maxRedirects: 5,
-      validateStatus: (status) => status < 400
-    });
-    html = resp.data;
-  } catch (err) {
-    const e = err;
-    logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 1 FAILED \u2014 could not fetch embed page");
-    return null;
-  }
-  logger.debug({ htmlLen: html.length }, "[DGHG] fetched embed page");
-  const isCfChallenge = html.includes("cf-challenge") || html.includes("challenge-platform") || html.includes("Just a moment");
-  if (isCfChallenge) {
-    logger.error({ htmlLen: html.length }, "[DGHG] Step 1 BLOCKED \u2014 got Cloudflare challenge page");
-    return null;
-  }
-  let passMd5Path = null;
-  const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'\"]+)['"]\s*,/);
-  if (passMd5Match) {
-    passMd5Path = passMd5Match[1];
-  }
-  if (!passMd5Path) {
-    const altMatch = html.match(/pass_md5\/([a-f0-9]+-\d+-\d+-\d+-[a-f0-9]+\/[^'"\s,)]+)/);
-    if (altMatch) {
-      passMd5Path = altMatch[1];
-    }
-  }
-  if (!passMd5Path) {
-    const altMatch2 = html.match(/pass_md5\/([^'"\s,)]+)/);
-    if (altMatch2) {
-      passMd5Path = altMatch2[1];
-    }
-  }
-  if (!passMd5Path) {
-    logger.error({ htmlLen: html.length }, "[DGHG] Step 2 FAILED \u2014 no pass_md5 path found in HTML");
-    return null;
-  }
-  const pathParts = passMd5Path.split("/");
-  const token = pathParts[pathParts.length - 1] || null;
-  if (!token) {
-    logger.error("[DGHG] Step 2b FAILED \u2014 could not extract token");
-    return null;
-  }
-  logger.debug({ passMd5Path, token: token.slice(0, 20) }, "[DGHG] extracted pass_md5 path");
-  const passMd5Url = `https://${host}/pass_md5/${passMd5Path}`;
-  let cdnBaseUrl;
-  try {
-    const resp = await axios6.get(passMd5Url, {
-      timeout: 15e3,
-      headers: {
-        "User-Agent": UA2,
-        Accept: "*/*",
-        Referer: embedUrl
-      },
-      maxRedirects: 5,
-      validateStatus: (status) => status < 400
-    });
-    cdnBaseUrl = resp.data.trim();
-  } catch (err) {
-    const e = err;
-    logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 3 FAILED \u2014 pass_md5 request failed");
-    return null;
-  }
-  if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
-    logger.error({ cdnBase: cdnBaseUrl?.slice(0, 200) }, "[DGHG] Step 3 FAILED \u2014 invalid CDN URL");
-    return null;
-  }
-  logger.debug({ cdnBase: cdnBaseUrl.slice(0, 100) }, "[DGHG] got CDN base URL");
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let randomSuffix = "";
-  for (let i = 0; i < 10; i++) {
-    randomSuffix += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  const expiry = Date.now();
-  const finalUrl = `${cdnBaseUrl}${randomSuffix}?token=${token}&expiry=${expiry}`;
-  logger.info({ finalUrl: finalUrl.slice(0, 120) }, "[DGHG] extraction SUCCESS");
-  let intro = null;
-  let outro = null;
-  if (skipData?.intro?.[1] && skipData.intro[1] > 0) {
-    intro = { start: skipData.intro[0], end: skipData.intro[1] };
-  }
-  if (skipData?.outro?.[1] && skipData.outro[1] > 0) {
-    outro = { start: skipData.outro[0], end: skipData.outro[1] };
-  }
-  return {
-    type: "direct",
-    provider: "dghg",
-    m3u8: finalUrl,
-    subtitles: [],
-    thumbnails: null,
-    intro,
-    outro
-  };
-}
-var DOOD_HOSTS, UA2;
-var init_dghg = __esm({
-  "src/lib/anime/providers/dghg.ts"() {
-    init_logger();
-    DOOD_HOSTS = [
-      "playmogo.com",
-      "myvidplay.com",
-      "doodstream.com",
-      "dood.la",
-      "dood.to",
-      "dood.so",
-      "dood.ws",
-      "dood.pm",
-      "dood.wf",
-      "dood.re",
-      "dood.yt",
-      "dood.cx",
-      "dood.sh",
-      "dood.watch"
-    ];
-    UA2 = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36";
-  }
-});
-
-// src/app.ts
-import express from "express";
-import cors from "cors";
-import pinoHttp from "pino-http";
-import path from "path";
-import { fileURLToPath } from "url";
-
-// src/routes/index.ts
-import { Router as Router3 } from "express";
-
-// src/routes/health.ts
-import { Router } from "express";
-import { execSync } from "child_process";
-var router = Router();
-router.get("/health", async (_req, res) => {
-  let curlAvailable = false;
-  let chromiumPath = null;
-  let playwrightVersion = null;
-  let chromiumLaunchTest = null;
-  try {
-    execSync("which curl", { encoding: "utf8", timeout: 5e3 });
-    curlAvailable = true;
-  } catch {
-    curlAvailable = false;
-  }
-  try {
-    chromiumPath = execSync(
-      "find /ms-playwright -name chrome -type f 2>/dev/null | head -1",
-      { encoding: "utf8", timeout: 5e3 }
-    ).trim();
-  } catch {
-    chromiumPath = null;
-  }
-  try {
-    const pw = await import("playwright");
-    playwrightVersion = pw?.chromium ? "available" : "unknown";
-  } catch {
-    playwrightVersion = "not available";
-  }
-  if (chromiumPath) {
-    try {
-      const { chromium } = await import("playwright");
-      const browser = await chromium.launch({
-        headless: true,
-        args: ["--no-sandbox", "--disable-setuid-sandbox"]
-      });
-      await browser.close();
-      chromiumLaunchTest = "success";
-    } catch (e) {
-      chromiumLaunchTest = `failed: ${e.message.slice(0, 100)}`;
-    }
-  }
-  res.json({
-    status: "ok",
-    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-    curl: curlAvailable,
-    node: process.version,
-    env: process.env.NODE_ENV || "development",
-    chromium: chromiumPath || "not found",
-    playwright: playwrightVersion,
-    chromiumLaunchTest
-  });
-});
-var health_default = router;
-
-// src/routes/anime.ts
-init_scraper();
-import { Router as Router2 } from "express";
-import axios7 from "axios";
-
-// src/lib/anime/providers/index.ts
-init_logger();
 
 // src/lib/anime/providers/vidplay.ts
-init_logger();
 import axios2 from "axios";
 import * as cheerio2 from "cheerio";
 import CryptoJS from "crypto-js";
@@ -828,7 +643,6 @@ function isVidplayHost(embedUrl) {
 }
 
 // src/lib/anime/providers/megacloud.ts
-init_logger();
 import axios3 from "axios";
 import * as cheerio3 from "cheerio";
 import CryptoJS2 from "crypto-js";
@@ -1037,11 +851,9 @@ function isMegacloudHost(embedUrl) {
 }
 
 // src/lib/anime/providers/echovideo.ts
-init_logger();
 import axios4 from "axios";
 
 // src/lib/anime/providers/playwright-extractor.ts
-init_logger();
 import https from "https";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 var ANIWAVES_REFERER = "https://aniwaves.ru/";
@@ -1420,7 +1232,6 @@ function isEchovideoHost(url) {
 }
 
 // src/lib/anime/providers/weneverbeenfree.ts
-init_logger();
 import axios5 from "axios";
 async function tryDecryptAesGcm(ivBase64, cipherBase64, keyHex) {
   try {
@@ -1629,8 +1440,143 @@ function isWeneverbeenfreeHost(url) {
   }
 }
 
+// src/lib/anime/providers/dghg.ts
+import axios6 from "axios";
+var DOOD_HOSTS = [
+  "playmogo.com",
+  "myvidplay.com",
+  "doodstream.com",
+  "dood.la",
+  "dood.to",
+  "dood.so",
+  "dood.ws",
+  "dood.pm",
+  "dood.wf",
+  "dood.re",
+  "dood.yt",
+  "dood.cx",
+  "dood.sh",
+  "dood.watch"
+];
+var UA2 = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36";
+function isPlaymogoHost(url) {
+  try {
+    const host = new URL(url).hostname;
+    return DOOD_HOSTS.some((h) => host.includes(h));
+  } catch {
+    return false;
+  }
+}
+async function extractDghg(embedUrl, skipData) {
+  const urlObj = new URL(embedUrl);
+  const host = urlObj.hostname;
+  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
+  let html;
+  try {
+    const { chromium } = await import("playwright");
+    const browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    });
+    const context = await browser.newContext({
+      userAgent: UA2,
+      extraHTTPHeaders: {
+        Referer: "https://aniwaves.ru/"
+      }
+    });
+    const page = await context.newPage();
+    await page.goto(embedUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 15e3
+    });
+    await page.waitForTimeout(2e3);
+    html = await page.content();
+    await browser.close();
+    logger.debug({ htmlLen: html.length }, "[DGHG] Playwright fetched embed page");
+  } catch (err) {
+    const e = err;
+    logger.error({ error: e.message }, "[DGHG] Step 1 FAILED \u2014 Playwright could not fetch embed page");
+    return null;
+  }
+  let passMd5Path = null;
+  const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'\"]+)['"]\s*,/);
+  if (passMd5Match) {
+    passMd5Path = passMd5Match[1];
+  }
+  if (!passMd5Path) {
+    const altMatch = html.match(/pass_md5\/([a-f0-9]+-\d+-\d+-\d+-[a-f0-9]+\/[^'"\s,)]+)/);
+    if (altMatch) {
+      passMd5Path = altMatch[1];
+    }
+  }
+  if (!passMd5Path) {
+    const altMatch2 = html.match(/pass_md5\/([^'"\s,)]+)/);
+    if (altMatch2) {
+      passMd5Path = altMatch2[1];
+    }
+  }
+  if (!passMd5Path) {
+    logger.error({ htmlLen: html.length }, "[DGHG] Step 2 FAILED \u2014 no pass_md5 path found in HTML");
+    return null;
+  }
+  const pathParts = passMd5Path.split("/");
+  const token = pathParts[pathParts.length - 1] || null;
+  if (!token) {
+    logger.error("[DGHG] Step 2b FAILED \u2014 could not extract token");
+    return null;
+  }
+  logger.debug({ passMd5Path, token: token.slice(0, 20) }, "[DGHG] extracted pass_md5 path");
+  const passMd5Url = `https://${host}/pass_md5/${passMd5Path}`;
+  let cdnBaseUrl;
+  try {
+    const resp = await axios6.get(passMd5Url, {
+      timeout: 15e3,
+      headers: {
+        "User-Agent": UA2,
+        Accept: "*/*",
+        Referer: embedUrl
+      },
+      maxRedirects: 5
+    });
+    cdnBaseUrl = resp.data.trim();
+  } catch (err) {
+    const e = err;
+    logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 3 FAILED \u2014 pass_md5 request failed");
+    return null;
+  }
+  if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
+    logger.error({ cdnBase: cdnBaseUrl?.slice(0, 200) }, "[DGHG] Step 3 FAILED \u2014 invalid CDN URL");
+    return null;
+  }
+  logger.debug({ cdnBase: cdnBaseUrl.slice(0, 100) }, "[DGHG] got CDN base URL");
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let randomSuffix = "";
+  for (let i = 0; i < 10; i++) {
+    randomSuffix += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  const expiry = Date.now();
+  const finalUrl = `${cdnBaseUrl}${randomSuffix}?token=${token}&expiry=${expiry}`;
+  logger.info({ finalUrl: finalUrl.slice(0, 120) }, "[DGHG] extraction SUCCESS");
+  let intro = null;
+  let outro = null;
+  if (skipData?.intro?.[1] && skipData.intro[1] > 0) {
+    intro = { start: skipData.intro[0], end: skipData.intro[1] };
+  }
+  if (skipData?.outro?.[1] && skipData.outro[1] > 0) {
+    outro = { start: skipData.outro[0], end: skipData.outro[1] };
+  }
+  return {
+    type: "direct",
+    provider: "dghg",
+    m3u8: finalUrl,
+    subtitles: [],
+    thumbnails: null,
+    intro,
+    outro
+  };
+}
+
 // src/lib/anime/providers/index.ts
-init_dghg();
 async function extractStream(embedUrl, serverName, skipData) {
   const lowerName = serverName.toLowerCase();
   logger.info(
@@ -1915,56 +1861,6 @@ router2.get("/proxy", async (req, res) => {
     }
   }
 });
-router2.get("/debug/dghg-test", async (req, res) => {
-  const linkId = req.query["linkId"];
-  if (!linkId) {
-    res.status(400).json({ error: "Missing query param: linkId" });
-    return;
-  }
-  try {
-    const { getEmbedUrl: getEmbedUrl2 } = await Promise.resolve().then(() => (init_scraper(), scraper_exports));
-    const { extractDghg: extractDghg2 } = await Promise.resolve().then(() => (init_dghg(), dghg_exports));
-    const sourcesResult = await getEmbedUrl2(linkId);
-    if (!sourcesResult?.url) {
-      res.status(502).json({ error: "Could not resolve embed URL", sourcesResult });
-      return;
-    }
-    const axios8 = (await import("axios")).default;
-    const embedUrl = sourcesResult.url;
-    const urlObj = new URL(embedUrl);
-    const host = urlObj.hostname;
-    const pageResp = await axios8.get(embedUrl, {
-      timeout: 15e3,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-        Accept: "text/html,*/*",
-        Referer: "https://aniwaves.ru/"
-      }
-    });
-    const html = pageResp.data;
-    const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'\"]+)['"]\s*,/);
-    const altMatch = html.match(/pass_md5\/([a-f0-9]+-\d+-\d+-\d+-[a-f0-9]+\/[^'"\s,)]+)/);
-    const anyMatch = html.match(/pass_md5\/([^'"\s,)]+)/);
-    const stream = await extractDghg2(embedUrl);
-    res.json({
-      embedUrl,
-      host,
-      htmlLen: html.length,
-      hasCfChallenge: html.includes("cf-challenge") || html.includes("Just a moment"),
-      passMd5Regex: passMd5Match?.[1] ?? null,
-      passMd5Alt: altMatch?.[1] ?? null,
-      passMd5Any: anyMatch?.[1] ?? null,
-      extractionResult: stream ? {
-        type: stream.type,
-        provider: stream.provider,
-        m3u8: stream.m3u8?.slice(0, 150)
-      } : null,
-      htmlSnippet: html.slice(0, 500)
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 var anime_default = router2;
 
 // src/routes/index.ts
@@ -1974,7 +1870,6 @@ router3.use(anime_default);
 var routes_default = router3;
 
 // src/app.ts
-init_logger();
 var __dirname = path.dirname(fileURLToPath(import.meta.url));
 var app = express();
 app.use(
@@ -2002,7 +1897,6 @@ app.use((req, res, next) => {
 var app_default = app;
 
 // src/index.ts
-init_logger();
 var rawPort = process.env["PORT"];
 if (!rawPort) {
   throw new Error(
