@@ -1,3 +1,7 @@
-# Render build configuration
-# Build Command: npm install && npm run build
-# Start Command: npm start
+services:
+  - type: web
+    name: aniwaves-api
+    runtime: docker
+    region: oregon
+    plan: free
+    healthCheckPath: /api/health
