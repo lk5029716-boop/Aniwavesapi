@@ -442,6 +442,18 @@ router.get("/debug/dghg", async (req, res): Promise<void> => {
         steps.step5_pageTitle = await page.title().catch(() => "unknown");
         steps.step5_pageUrl = page.url();
 
+        // Check for Cloudflare challenge
+        steps.step5_cfChallenge = html.includes("cf-challenge") || html.includes("challenge-platform");
+        steps.step5_turnstile = html.includes("turnstile");
+
+        // Get all form actions
+        const forms = html.match(/<form[^>]+action="([^"]+)"/g);
+        steps.step5_forms = forms?.map((f: string) => f.slice(0, 80)) ?? [];
+
+        // Get all iframes
+        const iframes = html.match(/<iframe[^>]+src="([^"]+)"/g);
+        steps.step5_iframes = iframes?.map((f: string) => f.slice(0, 80)) ?? [];
+
         const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
         steps.step5_hasPassMd5 = !!passMd5Match;
         steps.step5_passMd5Path = passMd5Match?.[1]?.slice(0, 100) ?? null;
@@ -449,7 +461,7 @@ router.get("/debug/dghg", async (req, res): Promise<void> => {
         // Also search for any pass_md5 reference
         steps.step5_passMd5Any = html.includes("pass_md5");
         steps.step5_getAny = html.includes("$.get");
-        steps.step5_htmlSnippet = html.slice(0, 300);
+        steps.step5_htmlSnippet = html.slice(0, 500);
 
         // Search for all $.get calls
         const getCalls = html.match(/\$\.get\s*\([^)]+\)/g);
