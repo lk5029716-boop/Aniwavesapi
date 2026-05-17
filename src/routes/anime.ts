@@ -334,4 +334,74 @@ router.get("/proxy", async (req, res): Promise<void> => {
   }
 });
 
+/**
+ * GET /api/debug/dghg?id=naruto-76396&ep=1&type=sub
+ * Temporary debug endpoint for DGHG extraction
+ */
+router.get("/debug/dghg", async (req, res): Promise<void> => {
+  const id = Array.isArray(req.query["id"]) ? req.query["id"][0] : req.query["id"];
+  const epRaw = Array.isArray(req.query["ep"]) ? req.query["ep"][0] : req.query["ep"];
+  const typeRaw = Array.isArray(req.query["type"]) ? req.query["type"][0] : req.query["type"];
+
+  if (!id || typeof id !== "string") {
+    res.status(400).json({ error: "Missing query param: id" });
+    return;
+  }
+  const ep = parseInt(String(epRaw), 10);
+  if (isNaN(ep)) {
+    res.status(400).json({ error: "param ep must be a number" });
+    return;
+  }
+  const type: "sub" | "dub" | "raw" = typeRaw === "dub" ? "dub" : typeRaw === "raw" ? "raw" : "sub";
+
+  // Get servers
+  const servers = await getServers(id, ep, type);
+  const dghgServer = servers.find((s) => s.name.toLowerCase().includes("dghg"));
+
+  if (!dghgServer) {
+    res.status(404).json({ error: "No DGHG server found", availableServers: servers.map((s) => s.name) });
+    return;
+  }
+
+  // Get embed URL
+  const sourcesResult = await getEmbedUrl(dghgServer.id, id);
+  if (!sourcesResult?.url) {
+    res.status(502).json({ error: "Could not resolve embed URL", server: dghgServer.name });
+    return;
+  }
+
+  // Run DGHG extraction with full debug
+  const { extractDghg } = await import("../lib/anime/providers/dghg.js");
+
+  // Monkey-patch logger to capture all logs
+  const logs: string[] = [];
+  const origInfo = logger.info.bind(logger);
+  const origError = logger.error.bind(logger);
+  const origDebug = logger.debug.bind(logger);
+  const origWarn = logger.warn.bind(logger);
+  logger.info = ((...args: unknown[]) => { logs.push(`INFO: ${JSON.stringify(args[0])}`); origInfo(...args); }) as typeof logger.info;
+  logger.error = ((...args: unknown[]) => { logs.push(`ERROR: ${JSON.stringify(args[0])}`); origError(...args); }) as typeof logger.error;
+  logger.debug = ((...args: unknown[]) => { logs.push(`DEBUG: ${JSON.stringify(args[0])}`); origDebug(...args); }) as typeof logger.debug;
+  logger.warn = ((...args: unknown[]) => { logs.push(`WARN: ${JSON.stringify(args[0])}`); origWarn(...args); }) as typeof logger.warn;
+
+  const stream = await extractDghg(sourcesResult.url, {
+    intro: sourcesResult.skip_data?.intro,
+    outro: sourcesResult.skip_data?.outro,
+  });
+
+  // Restore logger
+  logger.info = origInfo;
+  logger.error = origError;
+  logger.debug = origDebug;
+  logger.warn = origWarn;
+
+  res.json({
+    success: !!stream,
+    server: dghgServer.name,
+    embedUrl: sourcesResult.url.slice(0, 100),
+    stream: stream ? { provider: stream.provider, m3u8: stream.m3u8?.slice(0, 150) } : null,
+    logs: logs.slice(0, 50),
+  });
+});
+
 export default router;
