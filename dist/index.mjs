@@ -12,21 +12,53 @@ import { Router as Router3 } from "express";
 import { Router } from "express";
 import { execSync } from "child_process";
 var router = Router();
-router.get("/health", (_req, res) => {
+router.get("/health", async (_req, res) => {
   let curlAvailable = false;
-  let nodeVersion = process.version;
+  let chromiumPath = null;
+  let playwrightVersion = null;
+  let chromiumLaunchTest = null;
   try {
     execSync("which curl", { encoding: "utf8", timeout: 5e3 });
     curlAvailable = true;
   } catch {
     curlAvailable = false;
   }
+  try {
+    chromiumPath = execSync(
+      "find /ms-playwright -name chrome -type f 2>/dev/null | head -1",
+      { encoding: "utf8", timeout: 5e3 }
+    ).trim();
+  } catch {
+    chromiumPath = null;
+  }
+  try {
+    const pw = await import("playwright");
+    playwrightVersion = pw?.chromium ? "available" : "unknown";
+  } catch {
+    playwrightVersion = "not available";
+  }
+  if (chromiumPath) {
+    try {
+      const { chromium } = await import("playwright");
+      const browser = await chromium.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"]
+      });
+      await browser.close();
+      chromiumLaunchTest = "success";
+    } catch (e) {
+      chromiumLaunchTest = `failed: ${e.message.slice(0, 100)}`;
+    }
+  }
   res.json({
     status: "ok",
     timestamp: (/* @__PURE__ */ new Date()).toISOString(),
     curl: curlAvailable,
-    node: nodeVersion,
-    env: process.env.NODE_ENV || "development"
+    node: process.version,
+    env: process.env.NODE_ENV || "development",
+    chromium: chromiumPath || "not found",
+    playwright: playwrightVersion,
+    chromiumLaunchTest
   });
 });
 var health_default = router;
@@ -1426,7 +1458,7 @@ var DOOD_HOSTS = [
   "dood.sh",
   "dood.watch"
 ];
-var UA2 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var UA2 = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36";
 function isPlaymogoHost(url) {
   try {
     const host = new URL(url).hostname;
@@ -1435,64 +1467,54 @@ function isPlaymogoHost(url) {
     return false;
   }
 }
-async function fetchEmbedPage(embedUrl) {
-  let browser = null;
+function makeDghgDebug(step, reason, extra) {
+  return { _dghgDebug: { step, reason, ...extra } };
+}
+async function extractDghg(embedUrl, skipData) {
+  const urlObj = new URL(embedUrl);
+  const host = urlObj.hostname;
+  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
+  let html;
   try {
-    const { chromium } = await import("playwright");
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu"
-      ]
-    });
-    const context = await browser.newContext({
-      userAgent: UA2,
-      extraHTTPHeaders: {
+    const resp = await axios6.get(embedUrl, {
+      timeout: 15e3,
+      headers: {
+        "User-Agent": UA2,
+        Accept: "text/html,*/*",
         Referer: "https://aniwaves.ru/"
       }
     });
-    const page = await context.newPage();
-    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 2e4 }).catch(() => {
-    });
-    const html = await page.content();
-    await browser.close();
-    return html;
+    html = resp.data;
   } catch (err) {
-    logger.error({ error: err.message }, "[DGHG] Playwright fetch failed");
-    if (browser) await browser.close().catch(() => {
-    });
-    return null;
+    const e = err;
+    logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 1 FAILED \u2014 could not fetch embed page");
+    return makeDghgDebug(1, e.message, { status: e.response?.status });
   }
-}
-async function extractDghg(embedUrl, skipData) {
-  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
-  const html = await fetchEmbedPage(embedUrl);
-  if (!html) {
-    logger.error("[DGHG] Step 1 FAILED \u2014 could not fetch embed page");
-    return null;
-  }
+  logger.debug({ htmlLen: html.length }, "[DGHG] fetched embed page");
   let passMd5Path = null;
-  const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
-  if (passMd5Match) passMd5Path = passMd5Match[1];
-  let token = null;
-  if (passMd5Path) {
-    const parts = passMd5Path.split("/");
-    token = parts[parts.length - 1] || null;
+  const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'\"]+)['"]\s*,/);
+  if (passMd5Match) {
+    passMd5Path = passMd5Match[1];
   }
+  if (!passMd5Path) {
+    const altMatch = html.match(/pass_md5\/([a-f0-9]+-\d+-\d+-\d+-[a-f0-9]+\/[^'"\s]+)/);
+    if (altMatch) {
+      passMd5Path = altMatch[1];
+    }
+  }
+  if (!passMd5Path) {
+    const htmlSnippet = html.slice(0, 300);
+    logger.error({ htmlLen: html.length, htmlSnippet }, "[DGHG] Step 2 FAILED \u2014 no pass_md5 path found");
+    return makeDghgDebug(2, "no pass_md5 in HTML", { htmlLen: html.length, htmlSnippet });
+  }
+  const pathParts = passMd5Path.split("/");
+  const token = pathParts[pathParts.length - 1] || null;
   if (!token) {
-    const tokenMatch = html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/);
-    token = tokenMatch?.[1] ?? null;
+    logger.error("[DGHG] Step 2b FAILED \u2014 could not extract token");
+    return makeDghgDebug(2, "no token in path");
   }
-  logger.debug({ passMd5Path: passMd5Path?.slice(0, 100), token }, "[DGHG] extracted creds");
-  if (!passMd5Path || !token) {
-    logger.error({ hasPassMd5: !!passMd5Path, hasToken: !!token }, "[DGHG] Step 2 FAILED");
-    return null;
-  }
-  const urlObj = new URL(embedUrl);
-  const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
+  logger.debug({ passMd5Path, token: token.slice(0, 20) }, "[DGHG] extracted pass_md5 path");
+  const passMd5Url = `https://${host}/pass_md5/${passMd5Path}`;
   let cdnBaseUrl;
   try {
     const resp = await axios6.get(passMd5Url, {
@@ -1507,15 +1529,21 @@ async function extractDghg(embedUrl, skipData) {
     cdnBaseUrl = resp.data.trim();
   } catch (err) {
     const e = err;
-    logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 3 FAILED");
-    return null;
+    logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 3 FAILED \u2014 pass_md5 request failed");
+    return makeDghgDebug(3, e.message, { status: e.response?.status, passMd5Url });
   }
   if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
-    logger.error({ cdnBase: cdnBaseUrl?.slice(0, 100) }, "[DGHG] Step 3 FAILED \u2014 invalid CDN URL");
-    return null;
+    logger.error({ cdnBase: cdnBaseUrl?.slice(0, 200) }, "[DGHG] Step 3 FAILED \u2014 invalid CDN URL");
+    return makeDghgDebug(3, "invalid CDN URL", { cdnBase: cdnBaseUrl?.slice(0, 200) });
+  }
+  logger.debug({ cdnBase: cdnBaseUrl.slice(0, 100) }, "[DGHG] got CDN base URL");
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let randomSuffix = "";
+  for (let i = 0; i < 10; i++) {
+    randomSuffix += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   const expiry = Date.now();
-  const finalUrl = `${cdnBaseUrl}?token=${token}&expiry=${expiry}`;
+  const finalUrl = `${cdnBaseUrl}${randomSuffix}?token=${token}&expiry=${expiry}`;
   logger.info({ finalUrl: finalUrl.slice(0, 120) }, "[DGHG] extraction SUCCESS");
   let intro = null;
   let outro = null;

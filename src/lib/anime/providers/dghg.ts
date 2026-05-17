@@ -29,6 +29,10 @@ function isPlaymogoHost(url: string): boolean {
   }
 }
 
+function makeDghgDebug(step: number, reason: string, extra?: Record<string, unknown>) {
+  return { _dghgDebug: { step, reason, ...extra } };
+}
+
 export async function extractDghg(
   embedUrl: string,
   skipData?: { intro?: [number, number]; outro?: [number, number] }
@@ -51,21 +55,33 @@ export async function extractDghg(
     });
     html = resp.data as string;
   } catch (err) {
-    logger.error({ error: (err as Error).message }, "[DGHG] Step 1 FAILED — could not fetch embed page");
-    return null;
+    const e = err as Error & { response?: { status: number } };
+    logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 1 FAILED — could not fetch embed page");
+    return makeDghgDebug(1, e.message, { status: e.response?.status }) as unknown as StreamSource;
   }
+
+  logger.debug({ htmlLen: html.length }, "[DGHG] fetched embed page");
 
   // Step 2: Extract pass_md5 path from HTML
   // Pattern: $.get('/pass_md5/{file_id}-{random}/{token}', function(data)
   let passMd5Path: string | null = null;
-  const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
+  const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'\"]+)['"]\s*,/);
   if (passMd5Match) {
     passMd5Path = passMd5Match[1];
   }
 
   if (!passMd5Path) {
-    logger.error("[DGHG] Step 2 FAILED — could not extract pass_md5 path from HTML");
-    return null;
+    // Try alternative patterns
+    const altMatch = html.match(/pass_md5\/([a-f0-9]+-\d+-\d+-\d+-[a-f0-9]+\/[^'"\s]+)/);
+    if (altMatch) {
+      passMd5Path = altMatch[1];
+    }
+  }
+
+  if (!passMd5Path) {
+    const htmlSnippet = html.slice(0, 300);
+    logger.error({ htmlLen: html.length, htmlSnippet }, "[DGHG] Step 2 FAILED — no pass_md5 path found");
+    return makeDghgDebug(2, "no pass_md5 in HTML", { htmlLen: html.length, htmlSnippet }) as unknown as StreamSource;
   }
 
   // Extract token from the pass_md5 path (last segment after /)
@@ -73,8 +89,8 @@ export async function extractDghg(
   const token = pathParts[pathParts.length - 1] || null;
 
   if (!token) {
-    logger.error("[DGHG] Step 2 FAILED — could not extract token from pass_md5 path");
-    return null;
+    logger.error("[DGHG] Step 2b FAILED — could not extract token");
+    return makeDghgDebug(2, "no token in path") as unknown as StreamSource;
   }
 
   logger.debug({ passMd5Path, token: token.slice(0, 20) }, "[DGHG] extracted pass_md5 path");
@@ -96,13 +112,15 @@ export async function extractDghg(
   } catch (err) {
     const e = err as Error & { response?: { status: number } };
     logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 3 FAILED — pass_md5 request failed");
-    return null;
+    return makeDghgDebug(3, e.message, { status: e.response?.status, passMd5Url }) as unknown as StreamSource;
   }
 
   if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
-    logger.error({ cdnBase: cdnBaseUrl?.slice(0, 100) }, "[DGHG] Step 3 FAILED — invalid CDN URL");
-    return null;
+    logger.error({ cdnBase: cdnBaseUrl?.slice(0, 200) }, "[DGHG] Step 3 FAILED — invalid CDN URL");
+    return makeDghgDebug(3, "invalid CDN URL", { cdnBase: cdnBaseUrl?.slice(0, 200) }) as unknown as StreamSource;
   }
+
+  logger.debug({ cdnBase: cdnBaseUrl.slice(0, 100) }, "[DGHG] got CDN base URL");
 
   // Step 4: Construct final URL matching the makePlay() function from embed3.js
   // makePlay() generates 10 random chars + "?token={token}&expiry={timestamp}"
