@@ -865,7 +865,7 @@ async function extractViaPlaywright(embedUrl, providerName, skipData) {
   );
   let browser = null;
   try {
-    const { chromium } = await import("playwright-core");
+    const { chromium } = await import("playwright");
     browser = await chromium.launch({
       headless: true,
       args: [

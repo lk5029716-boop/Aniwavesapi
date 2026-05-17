@@ -34,10 +34,10 @@ export async function extractByfms(
     "[BYFMS] launching headless Chromium"
   );
 
-  let browser: import("playwright-core").Browser | null = null;
+  let browser: import("playwright").Browser | null = null;
 
   try {
-    const { chromium } = await import("playwright-core");
+    const { chromium } = await import("playwright");
 
     browser = await chromium.launch({
       headless: true,
