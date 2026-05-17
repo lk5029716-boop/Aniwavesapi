@@ -442,6 +442,11 @@ router.get("/debug/dghg", async (req, res): Promise<void> => {
         const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
         steps.step5_hasPassMd5 = !!passMd5Match;
         steps.step5_passMd5Path = passMd5Match?.[1]?.slice(0, 100) ?? null;
+
+        // Also search for any pass_md5 reference
+        steps.step5_passMd5Any = html.includes("pass_md5");
+        steps.step5_getAny = html.includes("$.get");
+        steps.step5_htmlSnippet = html.slice(0, 300);
       }
 
       await browser.close();
