@@ -414,17 +414,35 @@ router.get("/debug/dghg", async (req, res): Promise<void> => {
         extraHTTPHeaders: { Referer: "https://aniwaves.ru/" },
       });
       const page = await context.newPage();
-      await page.goto(sourcesResult.url, { waitUntil: "domcontentloaded", timeout: 30000 }).catch((e: Error) => {
-        steps.step5_nav_error = e.message;
-      });
-      const html = await page.content();
-      steps.step5_htmlLength = html.length;
-      steps.step5_pageTitle = await page.title().catch(() => "unknown");
-      steps.step5_pageUrl = page.url();
 
-      const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
-      steps.step5_hasPassMd5 = !!passMd5Match;
-      steps.step5_passMd5Path = passMd5Match?.[1]?.slice(0, 100) ?? null;
+      // Use a short timeout for navigation
+      const navTimeout = 15000;
+      let navError: string | null = null;
+      try {
+        await page.goto(sourcesResult.url, { waitUntil: "commit", timeout: navTimeout });
+        steps.step5_nav = "commit ok";
+      } catch (navErr) {
+        navError = (navErr as Error).message;
+        steps.step5_nav = `commit failed: ${navError.slice(0, 100)}`;
+      }
+
+      // Wait a bit for page to load
+      await page.waitForTimeout(3000).catch(() => {});
+
+      const html = await page.content().catch((e: Error) => {
+        steps.step5_contentError = e.message;
+        return "";
+      });
+      steps.step5_htmlLength = html.length;
+
+      if (html.length > 0) {
+        steps.step5_pageTitle = await page.title().catch(() => "unknown");
+        steps.step5_pageUrl = page.url();
+
+        const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
+        steps.step5_hasPassMd5 = !!passMd5Match;
+        steps.step5_passMd5Path = passMd5Match?.[1]?.slice(0, 100) ?? null;
+      }
 
       await browser.close();
       steps.step5_close = "ok";
