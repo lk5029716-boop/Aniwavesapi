@@ -10,7 +10,6 @@
  *   3. GET /pass_md5/{path} → get CDN base URL
  *   4. Build final URL: {cdnUrl}?token={token}&expiry={timestamp}
  */
-import { execFileSync } from "child_process";
 import axios from "axios";
 import { logger } from "../../logger.js";
 import type { StreamSource, SkipTime } from "../types.js";
@@ -36,10 +35,14 @@ function isPlaymogoHost(url: string): boolean {
 /**
  * Use Playwright to fetch the embed page HTML (bypasses Cloudflare).
  */
-async function fetchEmbedPage(embedUrl: string): Promise<string | null> {
+async function fetchEmbedPage(embedUrl: string): Promise<{ html: string; debug: Record<string, unknown> } | null> {
   let browser: import("playwright").Browser | null = null;
+  const debug: Record<string, unknown> = { embedUrl: embedUrl.slice(0, 100) };
+
   try {
     const { chromium } = await import("playwright");
+    debug.playwrightImported = true;
+
     browser = await chromium.launch({
       headless: true,
       args: [
@@ -49,6 +52,8 @@ async function fetchEmbedPage(embedUrl: string): Promise<string | null> {
         "--disable-gpu",
       ],
     });
+    debug.browserLaunched = true;
+
     const context = await browser.newContext({
       userAgent: UA,
       extraHTTPHeaders: {
@@ -56,13 +61,39 @@ async function fetchEmbedPage(embedUrl: string): Promise<string | null> {
       },
     });
     const page = await context.newPage();
-    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+
+    // Try navigation with different wait strategies
+    let navResult: "success" | "timeout" | "error" = "error";
+    try {
+      await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+      navResult = "success";
+    } catch (navErr) {
+      const msg = (navErr as Error).message;
+      if (msg.includes("timeout")) {
+        navResult = "timeout";
+        logger.warn({ embedUrl: embedUrl.slice(0, 80) }, "[DGHG] page.goto timeout — continuing with partial load");
+      } else {
+        throw navErr;
+      }
+    }
+    debug.navResult = navResult;
+
     const html = await page.content();
+    debug.htmlLength = html.length;
+    debug.pageTitle = await page.title().catch(() => "unknown");
+    debug.pageUrl = page.url();
+
     await browser.close();
-    return html;
+    debug.browserClosed = true;
+
+    logger.info(debug, "[DGHG] fetchEmbedPage complete");
+
+    return { html, debug };
   } catch (err) {
     const e = err as Error;
-    logger.error({ error: e.message, stack: e.stack }, "[DGHG] Playwright fetch failed");
+    debug.error = e.message;
+    debug.stack = e.stack?.split("\n").slice(0, 3).join(" | ");
+    logger.error(debug, "[DGHG] Playwright fetch failed");
     if (browser) await browser.close().catch(() => {});
     return null;
   }
@@ -71,15 +102,19 @@ async function fetchEmbedPage(embedUrl: string): Promise<string | null> {
 export async function extractDghg(
   embedUrl: string,
   skipData?: { intro?: [number, number]; outro?: [number, number] }
-): Promise<StreamSource | null> {
+): Promise<StreamSource & { _dghgDebug?: Record<string, unknown> } | null> {
+  const masterDebug: Record<string, unknown> = { embedUrl: embedUrl.slice(0, 100) };
   logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
 
   // Step 1: Fetch embed page via Playwright
-  const html = await fetchEmbedPage(embedUrl);
-  if (!html) {
-    logger.error("[DGHG] Step 1 FAILED — could not fetch embed page");
+  const result = await fetchEmbedPage(embedUrl);
+  if (!result) {
+    logger.error({ ...masterDebug, step: 1 }, "[DGHG] Step 1 FAILED — could not fetch embed page");
     return null;
   }
+
+  const { html, debug: fetchDebug } = result;
+  masterDebug.fetch = fetchDebug;
 
   // Step 2: Extract pass_md5 path from HTML
   let passMd5Path: string | null = null;
@@ -96,16 +131,24 @@ export async function extractDghg(
     token = tokenMatch?.[1] ?? null;
   }
 
-  logger.debug({ passMd5Path: passMd5Path?.slice(0, 100), token }, "[DGHG] extracted creds");
+  masterDebug.passMd5Path = passMd5Path?.slice(0, 100);
+  masterDebug.token = token?.slice(0, 30);
+  masterDebug.hasPassMd5 = !!passMd5Path;
+  masterDebug.hasToken = !!token;
+
+  logger.info(masterDebug, "[DGHG] extracted creds");
 
   if (!passMd5Path || !token) {
-    logger.error({ hasPassMd5: !!passMd5Path, hasToken: !!token }, "[DGHG] Step 2 FAILED");
+    // Log a snippet of the HTML to help debug
+    masterDebug.htmlSnippet = html.slice(0, 500);
+    logger.error(masterDebug, "[DGHG] Step 2 FAILED — could not extract pass_md5 path or token");
     return null;
   }
 
   // Step 3: Call pass_md5 to get CDN URL
   const urlObj = new URL(embedUrl);
   const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
+  masterDebug.passMd5Url = passMd5Url.slice(0, 120);
 
   let cdnBaseUrl: string;
   try {
@@ -119,21 +162,26 @@ export async function extractDghg(
       maxRedirects: 5,
     });
     cdnBaseUrl = (resp.data as string).trim();
+    masterDebug.cdnBase = cdnBaseUrl.slice(0, 100);
   } catch (err) {
     const e = err as Error & { response?: { status: number } };
-    logger.error({ error: e.message, status: e.response?.status }, "[DGHG] Step 3 FAILED");
+    masterDebug.step3Error = e.message;
+    masterDebug.step3Status = e.response?.status;
+    logger.error(masterDebug, "[DGHG] Step 3 FAILED");
     return null;
   }
 
   if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
-    logger.error({ cdnBase: cdnBaseUrl?.slice(0, 100) }, "[DGHG] Step 3 FAILED — invalid CDN URL");
+    masterDebug.cdnBase = cdnBaseUrl?.slice(0, 100);
+    logger.error(masterDebug, "[DGHG] Step 3 FAILED — invalid CDN URL");
     return null;
   }
 
   // Step 4: Build final URL
   const expiry = Date.now();
   const finalUrl = `${cdnBaseUrl}?token=${token}&expiry=${expiry}`;
-  logger.info({ finalUrl: finalUrl.slice(0, 120) }, "[DGHG] extraction SUCCESS");
+  masterDebug.finalUrl = finalUrl.slice(0, 120);
+  logger.info(masterDebug, "[DGHG] extraction SUCCESS");
 
   let intro: SkipTime | null = null;
   let outro: SkipTime | null = null;
@@ -152,6 +200,7 @@ export async function extractDghg(
     thumbnails: null,
     intro,
     outro,
+    _dghgDebug: masterDebug,
   };
 }
 
