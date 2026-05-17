@@ -13,18 +13,18 @@ import { Router } from "express";
 import { execSync } from "child_process";
 var router = Router();
 router.get("/health", (_req, res) => {
-  let curlAvailable2 = false;
+  let curlAvailable = false;
   let nodeVersion = process.version;
   try {
     execSync("which curl", { encoding: "utf8", timeout: 5e3 });
-    curlAvailable2 = true;
+    curlAvailable = true;
   } catch {
-    curlAvailable2 = false;
+    curlAvailable = false;
   }
   res.json({
     status: "ok",
     timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-    curl: curlAvailable2,
+    curl: curlAvailable,
     node: nodeVersion,
     env: process.env.NODE_ENV || "development"
   });
@@ -1409,7 +1409,7 @@ function isWeneverbeenfreeHost(url) {
 }
 
 // src/lib/anime/providers/dghg.ts
-import { execSync as execSync2, execFileSync } from "child_process";
+import { execFileSync } from "child_process";
 import axios6 from "axios";
 var DOOD_HOSTS = [
   "playmogo.com",
@@ -1428,19 +1428,6 @@ var DOOD_HOSTS = [
   "dood.watch"
 ];
 var UA2 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-var curlAvailable = null;
-function isCurlAvailable() {
-  if (curlAvailable !== null) return curlAvailable;
-  try {
-    execSync2("which curl", { encoding: "utf8", timeout: 5e3 });
-    curlAvailable = true;
-    logger.info("curl is available");
-  } catch {
-    curlAvailable = false;
-    logger.warn("curl NOT available, will use axios (may get 403 from Cloudflare)");
-  }
-  return curlAvailable;
-}
 function isPlaymogoHost(url) {
   try {
     const host = new URL(url).hostname;
@@ -1501,25 +1488,22 @@ async function axiosFetch(url, referer) {
   }
 }
 async function extractDghg(embedUrl, skipData) {
-  const curl = isCurlAvailable();
-  logger.info({ embedUrl: embedUrl.slice(0, 100), curl }, "[DGHG] starting extraction");
+  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
   let html;
-  let step1Error = null;
-  if (curl) {
-    const r = curlFetch(embedUrl, "https://aniwaves.ru/");
-    html = r.body;
-    step1Error = r.error;
+  let fetchError = null;
+  const step1 = curlFetch(embedUrl, "https://aniwaves.ru/");
+  if (step1.error || !step1.body) {
+    logger.warn({ error: step1.error }, "[DGHG] curl failed, trying axios");
+    const step1Axios = await axiosFetch(embedUrl, "https://aniwaves.ru/");
+    html = step1Axios.body;
+    fetchError = step1Axios.error;
   } else {
-    const r = await axiosFetch(embedUrl, "https://aniwaves.ru/");
-    html = r.body;
-    step1Error = r.error;
+    html = step1.body;
+    fetchError = step1.error;
   }
-  if (!html || step1Error) {
-    logger.error({ error: step1Error }, "[DGHG] Step 1 FAILED");
-    return {
-      source: null,
-      debug: { curlAvailable: curl, step: "fetch_embed", detail: step1Error || "empty response", embedUrl }
-    };
+  if (!html || fetchError) {
+    logger.error({ error: fetchError }, "[DGHG] Step 1 FAILED");
+    return null;
   }
   let passMd5Path = null;
   const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
@@ -1533,30 +1517,25 @@ async function extractDghg(embedUrl, skipData) {
     const tokenMatch = html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/);
     token = tokenMatch?.[1] ?? null;
   }
+  logger.debug({ passMd5Path: passMd5Path?.slice(0, 100), token }, "[DGHG] extracted creds");
   if (!passMd5Path || !token) {
-    return {
-      source: null,
-      debug: { curlAvailable: curl, step: "extract_creds", detail: `passMd5=${!!passMd5Path}, token=${!!token}`, embedUrl }
-    };
+    logger.error({ hasPassMd5: !!passMd5Path, hasToken: !!token }, "[DGHG] Step 2 FAILED");
+    return null;
   }
   const urlObj = new URL(embedUrl);
   const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
   let cdnBaseUrl;
-  let step3Error = null;
-  if (curl) {
-    const r = curlFetch(passMd5Url, embedUrl);
-    cdnBaseUrl = r.body;
-    step3Error = r.error;
+  const step3 = curlFetch(passMd5Url, embedUrl);
+  if (step3.error || !step3.body || !step3.body.startsWith("http")) {
+    logger.warn({ error: step3.error }, "[DGHG] curl pass_md5 failed, trying axios");
+    const step3Axios = await axiosFetch(passMd5Url, embedUrl);
+    cdnBaseUrl = step3Axios.body;
+    if (step3Axios.error || !cdnBaseUrl.startsWith("http")) {
+      logger.error({ error: step3Axios.error, cdnBase: cdnBaseUrl?.slice(0, 50) }, "[DGHG] Step 3 FAILED");
+      return null;
+    }
   } else {
-    const r = await axiosFetch(passMd5Url, embedUrl);
-    cdnBaseUrl = r.body;
-    step3Error = r.error;
-  }
-  if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http") || step3Error) {
-    return {
-      source: null,
-      debug: { curlAvailable: curl, step: "fetch_pass_md5", detail: step3Error || `invalid: ${cdnBaseUrl?.slice(0, 50)}`, embedUrl }
-    };
+    cdnBaseUrl = step3.body;
   }
   const expiry = Date.now();
   const finalUrl = `${cdnBaseUrl}?token=${token}&expiry=${expiry}`;
@@ -1570,16 +1549,13 @@ async function extractDghg(embedUrl, skipData) {
     outro = { start: skipData.outro[0], end: skipData.outro[1] };
   }
   return {
-    source: {
-      type: "direct",
-      provider: "dghg",
-      m3u8: finalUrl,
-      subtitles: [],
-      thumbnails: null,
-      intro,
-      outro
-    },
-    debug: null
+    type: "direct",
+    provider: "dghg",
+    m3u8: finalUrl,
+    subtitles: [],
+    thumbnails: null,
+    intro,
+    outro
   };
 }
 
@@ -1592,11 +1568,7 @@ async function extractStream(embedUrl, serverName, skipData) {
   );
   if (isPlaymogoHost(embedUrl) || lowerName.includes("dghg") || lowerName.includes("myvidplay")) {
     logger.info({ serverName }, "routing to DGHG/PlayMogo extractor");
-    const result = await extractDghg(embedUrl, skipData);
-    if (result.debug) {
-      logger.warn({ serverName, debug: result.debug }, "DGHG extraction failed");
-    }
-    return result.source;
+    return extractDghg(embedUrl, skipData);
   }
   if (isWeneverbeenfreeHost(embedUrl) || lowerName.includes("byfms") || lowerName.includes("weneverbeenfree")) {
     logger.info({ serverName }, "routing to WeneverBeenFree extractor");
@@ -1629,7 +1601,7 @@ async function extractStream(embedUrl, serverName, skipData) {
   const wnbfResult = await extractWeneverbeenfree(embedUrl, skipData);
   if (wnbfResult?.m3u8) return wnbfResult;
   const dghgResult = await extractDghg(embedUrl, skipData);
-  if (dghgResult.source?.m3u8) return dghgResult.source;
+  if (dghgResult?.m3u8) return dghgResult;
   logger.error({ serverName, embedUrl: embedUrl.slice(0, 80) }, "all extractors failed");
   return null;
 }

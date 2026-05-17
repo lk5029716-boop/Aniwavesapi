@@ -11,7 +11,7 @@
  * Uses curl because Cloudflare blocks axios/node-fetch TLS fingerprints.
  * Falls back to axios if curl is not available.
  */
-import { execSync, execFileSync } from "child_process";
+import { execFileSync } from "child_process";
 import axios from "axios";
 import { logger } from "../../logger.js";
 import type { StreamSource, SkipTime } from "../types.js";
@@ -24,21 +24,6 @@ const DOOD_HOSTS = [
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
-let curlAvailable: boolean | null = null;
-
-function isCurlAvailable(): boolean {
-  if (curlAvailable !== null) return curlAvailable;
-  try {
-    execSync("which curl", { encoding: "utf8", timeout: 5000 });
-    curlAvailable = true;
-    logger.info("curl is available");
-  } catch {
-    curlAvailable = false;
-    logger.warn("curl NOT available, will use axios (may get 403 from Cloudflare)");
-  }
-  return curlAvailable;
-}
 
 function isPlaymogoHost(url: string): boolean {
   try {
@@ -96,43 +81,31 @@ async function axiosFetch(url: string, referer: string): Promise<{ body: string;
   }
 }
 
-export interface DghgResult {
-  source: StreamSource | null;
-  debug: {
-    curlAvailable: boolean;
-    step: string;
-    detail: string;
-    embedUrl: string;
-  } | null;
-}
-
 export async function extractDghg(
   embedUrl: string,
   skipData?: { intro?: [number, number]; outro?: [number, number] }
-): Promise<DghgResult> {
-  const curl = isCurlAvailable();
-  logger.info({ embedUrl: embedUrl.slice(0, 100), curl }, "[DGHG] starting extraction");
+): Promise<StreamSource | null> {
+  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
 
-  // Step 1: Fetch embed page
+  // Step 1: Fetch embed page — always try curl first
   let html: string;
-  let step1Error: string | null = null;
+  let fetchError: string | null = null;
 
-  if (curl) {
-    const r = curlFetch(embedUrl, "https://aniwaves.ru/");
-    html = r.body;
-    step1Error = r.error;
+  const step1 = curlFetch(embedUrl, "https://aniwaves.ru/");
+  if (step1.error || !step1.body) {
+    // curl failed, try axios as fallback
+    logger.warn({ error: step1.error }, "[DGHG] curl failed, trying axios");
+    const step1Axios = await axiosFetch(embedUrl, "https://aniwaves.ru/");
+    html = step1Axios.body;
+    fetchError = step1Axios.error;
   } else {
-    const r = await axiosFetch(embedUrl, "https://aniwaves.ru/");
-    html = r.body;
-    step1Error = r.error;
+    html = step1.body;
+    fetchError = step1.error;
   }
 
-  if (!html || step1Error) {
-    logger.error({ error: step1Error }, "[DGHG] Step 1 FAILED");
-    return {
-      source: null,
-      debug: { curlAvailable: curl, step: "fetch_embed", detail: step1Error || "empty response", embedUrl },
-    };
+  if (!html || fetchError) {
+    logger.error({ error: fetchError }, "[DGHG] Step 1 FAILED");
+    return null;
   }
 
   // Step 2: Extract pass_md5 path
@@ -150,11 +123,11 @@ export async function extractDghg(
     token = tokenMatch?.[1] ?? null;
   }
 
+  logger.debug({ passMd5Path: passMd5Path?.slice(0, 100), token }, "[DGHG] extracted creds");
+
   if (!passMd5Path || !token) {
-    return {
-      source: null,
-      debug: { curlAvailable: curl, step: "extract_creds", detail: `passMd5=${!!passMd5Path}, token=${!!token}`, embedUrl },
-    };
+    logger.error({ hasPassMd5: !!passMd5Path, hasToken: !!token }, "[DGHG] Step 2 FAILED");
+    return null;
   }
 
   // Step 3: Call pass_md5
@@ -162,23 +135,17 @@ export async function extractDghg(
   const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
 
   let cdnBaseUrl: string;
-  let step3Error: string | null = null;
-
-  if (curl) {
-    const r = curlFetch(passMd5Url, embedUrl);
-    cdnBaseUrl = r.body;
-    step3Error = r.error;
+  const step3 = curlFetch(passMd5Url, embedUrl);
+  if (step3.error || !step3.body || !step3.body.startsWith("http")) {
+    logger.warn({ error: step3.error }, "[DGHG] curl pass_md5 failed, trying axios");
+    const step3Axios = await axiosFetch(passMd5Url, embedUrl);
+    cdnBaseUrl = step3Axios.body;
+    if (step3Axios.error || !cdnBaseUrl.startsWith("http")) {
+      logger.error({ error: step3Axios.error, cdnBase: cdnBaseUrl?.slice(0, 50) }, "[DGHG] Step 3 FAILED");
+      return null;
+    }
   } else {
-    const r = await axiosFetch(passMd5Url, embedUrl);
-    cdnBaseUrl = r.body;
-    step3Error = r.error;
-  }
-
-  if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http") || step3Error) {
-    return {
-      source: null,
-      debug: { curlAvailable: curl, step: "fetch_pass_md5", detail: step3Error || `invalid: ${cdnBaseUrl?.slice(0, 50)}`, embedUrl },
-    };
+    cdnBaseUrl = step3.body;
   }
 
   // Step 4: Build final URL
@@ -196,16 +163,13 @@ export async function extractDghg(
   }
 
   return {
-    source: {
-      type: "direct",
-      provider: "dghg",
-      m3u8: finalUrl,
-      subtitles: [],
-      thumbnails: null,
-      intro,
-      outro,
-    },
-    debug: null,
+    type: "direct",
+    provider: "dghg",
+    m3u8: finalUrl,
+    subtitles: [],
+    thumbnails: null,
+    intro,
+    outro,
   };
 }
 
