@@ -339,82 +339,104 @@ router.get("/proxy", async (req, res): Promise<void> => {
  * Temporary debug endpoint for DGHG extraction
  */
 router.get("/debug/dghg", async (req, res): Promise<void> => {
-  const id = Array.isArray(req.query["id"]) ? req.query["id"][0] : req.query["id"];
-  const epRaw = Array.isArray(req.query["ep"]) ? req.query["ep"][0] : req.query["ep"];
-  const typeRaw = Array.isArray(req.query["type"]) ? req.query["type"][0] : req.query["type"];
-
-  if (!id || typeof id !== "string") {
-    res.status(400).json({ error: "Missing query param: id" });
-    return;
-  }
-  const ep = parseInt(String(epRaw), 10);
-  if (isNaN(ep)) {
-    res.status(400).json({ error: "param ep must be a number" });
-    return;
-  }
-  const type: "sub" | "dub" | "raw" = typeRaw === "dub" ? "dub" : typeRaw === "raw" ? "raw" : "sub";
+  const steps: Record<string, unknown> = {};
 
   try {
-    // Get servers
-    const servers = await getServers(id, ep, type);
-    const dghgServer = servers.find((s) => s.name.toLowerCase().includes("dghg"));
-
-    if (!dghgServer) {
-      res.status(404).json({ error: "No DGHG server found", availableServers: servers.map((s) => s.name) });
+    // Step 1: Test Playwright import
+    steps.step1_import = "starting";
+    try {
+      const pw = await import("playwright");
+      steps.step1_import = "ok";
+      steps.playwrightKeys = Object.keys(pw);
+    } catch (e) {
+      steps.step1_import = `failed: ${(e as Error).message}`;
+      res.json(steps);
       return;
     }
 
-    // Get embed URL
-    const sourcesResult = await getEmbedUrl(dghgServer.id, id);
-    if (!sourcesResult?.url) {
-      res.status(502).json({ error: "Could not resolve embed URL", server: dghgServer.name });
-      return;
-    }
-
-    // Test Playwright launch
-    let playwrightTest: Record<string, unknown> = {};
+    // Step 2: Test Chromium launch
+    steps.step2_launch = "starting";
     try {
       const { chromium } = await import("playwright");
-      playwrightTest.imported = true;
       const browser = await chromium.launch({
         headless: true,
         args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
       });
-      playwrightTest.launched = true;
+      steps.step2_launch = "ok";
+      await browser.close();
+      steps.step2_close = "ok";
+    } catch (e) {
+      steps.step2_launch = `failed: ${(e as Error).message}`;
+      res.json(steps);
+      return;
+    }
+
+    // Step 3: Get servers
+    const id = Array.isArray(req.query["id"]) ? req.query["id"][0] : req.query["id"];
+    const epRaw = Array.isArray(req.query["ep"]) ? req.query["ep"][0] : req.query["ep"];
+    const typeRaw = Array.isArray(req.query["type"]) ? req.query["type"][0] : req.query["type"];
+    const ep = parseInt(String(epRaw), 10);
+    const type: "sub" | "dub" | "raw" = typeRaw === "dub" ? "dub" : typeRaw === "raw" ? "raw" : "sub";
+
+    steps.step3_servers = "starting";
+    const servers = await getServers(String(id), ep, type);
+    steps.step3_servers = `ok, count=${servers.length}`;
+    steps.serverNames = servers.map((s: { name: string }) => s.name);
+
+    const dghgServer = servers.find((s: { name: string }) => s.name.toLowerCase().includes("dghg"));
+    steps.dghgFound = !!dghgServer;
+
+    if (!dghgServer) {
+      res.json(steps);
+      return;
+    }
+
+    // Step 4: Get embed URL
+    steps.step4_embed = "starting";
+    const sourcesResult = await getEmbedUrl(dghgServer.id, String(id));
+    steps.step4_embed = sourcesResult?.url ? `ok: ${sourcesResult.url.slice(0, 80)}` : "no url";
+
+    if (!sourcesResult?.url) {
+      res.json(steps);
+      return;
+    }
+
+    // Step 5: Navigate to embed page
+    steps.step5_nav = "starting";
+    try {
+      const { chromium } = await import("playwright");
+      const browser = await chromium.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+      });
       const context = await browser.newContext({
         userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         extraHTTPHeaders: { Referer: "https://aniwaves.ru/" },
       });
       const page = await context.newPage();
-      const embedUrl = sourcesResult.url;
-      const navPromise = page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch((e: Error) => {
-        playwrightTest.navError = e.message;
+      await page.goto(sourcesResult.url, { waitUntil: "domcontentloaded", timeout: 30000 }).catch((e: Error) => {
+        steps.step5_nav_error = e.message;
       });
-      await navPromise;
       const html = await page.content();
-      playwrightTest.htmlLength = html.length;
-      playwrightTest.pageTitle = await page.title().catch(() => "unknown");
-      playwrightTest.pageUrl = page.url();
+      steps.step5_htmlLength = html.length;
+      steps.step5_pageTitle = await page.title().catch(() => "unknown");
+      steps.step5_pageUrl = page.url();
 
-      // Try to extract pass_md5
       const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
-      playwrightTest.hasPassMd5 = !!passMd5Match;
-      playwrightTest.passMd5Path = passMd5Match?.[1]?.slice(0, 100) ?? null;
+      steps.step5_hasPassMd5 = !!passMd5Match;
+      steps.step5_passMd5Path = passMd5Match?.[1]?.slice(0, 100) ?? null;
 
       await browser.close();
-      playwrightTest.closed = true;
+      steps.step5_close = "ok";
     } catch (e) {
-      playwrightTest.error = (e as Error).message;
-      playwrightTest.stack = (e as Error).stack?.split("\n").slice(0, 5).join("\n");
+      steps.step5_nav = `failed: ${(e as Error).message}`;
     }
 
-    res.json({
-      server: dghgServer.name,
-      embedUrl: sourcesResult.url.slice(0, 100),
-      playwrightTest,
-    });
+    res.json(steps);
   } catch (e) {
-    res.status(500).json({ error: (e as Error).message, stack: (e as Error).stack?.split("\n").slice(0, 5).join("\n") });
+    steps.fatal = `${(e as Error).message}`;
+    steps.stack = (e as Error).stack?.split("\n").slice(0, 5).join("\n");
+    res.json(steps);
   }
 });
 
