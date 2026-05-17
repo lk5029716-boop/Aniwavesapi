@@ -1,14 +1,12 @@
 /**
  * DGHG / PlayMogo / DoodStream provider extractor.
  *
- * DGHG embeds redirect to playmogo.com (DoodStream-based CDN).
  * Flow:
- *   1. GET /e/{videoCode} → extract pass_md5 path + token from HTML
+ *   1. GET embed page → extract pass_md5 path + token
  *   2. GET /pass_md5/{path} → get CDN base URL
  *   3. Build final URL: {cdnUrl}?token={token}&expiry={timestamp}
  *
- * NOTE: We use curl via child_process because Cloudflare blocks axios/node-fetch
- * TLS fingerprints. curl has a browser-like TLS fingerprint that passes CF checks.
+ * Uses curl because Cloudflare blocks axios/node-fetch TLS fingerprints.
  */
 import { execSync } from "child_process";
 import { logger } from "../../logger.js";
@@ -32,11 +30,15 @@ function isPlaymogoHost(url: string): boolean {
   }
 }
 
-/**
- * Fetch a URL using curl (bypasses Cloudflare TLS fingerprinting).
- * Returns the response body as a string.
- */
 function curlFetch(url: string, referer?: string): string {
+  // Check if curl exists
+  try {
+    execSync("which curl", { encoding: "utf8" });
+  } catch {
+    logger.error("curl not found on system");
+    return "";
+  }
+
   const args = [
     "-s", "-L",
     "-A", UA,
@@ -54,8 +56,12 @@ function curlFetch(url: string, referer?: string): string {
     });
     return result.trim();
   } catch (err) {
-    const e = err as Error;
-    logger.warn({ url: url.slice(0, 80), error: e.message }, "curl fetch failed");
+    const e = err as Error & { stderr?: Buffer };
+    logger.warn({
+      url: url.slice(0, 80),
+      error: e.message,
+      stderr: e.stderr?.toString().slice(0, 200),
+    }, "curl fetch failed");
     return "";
   }
 }
@@ -64,27 +70,26 @@ export async function extractDghg(
   embedUrl: string,
   skipData?: { intro?: [number, number]; outro?: [number, number] }
 ): Promise<StreamSource | null> {
-  logger.info({ embedUrl: embedUrl.slice(0, 80) }, "[DGHG] starting extraction");
+  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
 
-  // Step 1: Fetch embed page to get pass_md5 path and token
+  // Step 1: Fetch embed page
   const html = curlFetch(embedUrl, "https://aniwaves.ru/");
+  logger.debug({ htmlLen: html.length, htmlSnippet: html.slice(0, 200) }, "[DGHG] step 1 result");
+
   if (!html) {
-    logger.error("[DGHG] Step 1 FAILED — could not fetch embed page");
+    logger.error("[DGHG] Step 1 FAILED — empty response from embed page");
     return null;
   }
 
   // Step 2: Extract pass_md5 path
-  // Pattern: $.get('/pass_md5/{hash}/{token}', function(data) { ... })
   let passMd5Path: string | null = null;
   const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
   if (passMd5Match) {
     passMd5Path = passMd5Match[1];
   }
 
-  // Extract token from cookieIndex='{token}'
   let token: string | null = null;
   if (passMd5Path) {
-    // token is the last segment after the last /
     const parts = passMd5Path.split("/");
     token = parts[parts.length - 1] || null;
   }
@@ -95,30 +100,33 @@ export async function extractDghg(
   }
 
   logger.debug(
-    { passMd5Path: passMd5Path?.slice(0, 60), token: token?.slice(0, 20) },
+    { passMd5Path: passMd5Path?.slice(0, 80), token },
     "[DGHG] extracted creds"
   );
 
   if (!passMd5Path) {
-    logger.error("[DGHG] Step 2 FAILED — no pass_md5 path in HTML");
+    logger.error({ htmlSnippet: html.slice(0, 500) }, "[DGHG] Step 2 FAILED — no pass_md5 path found");
     return null;
   }
 
-  // Step 3: Call pass_md5 to get CDN URL
+  // Step 3: Call pass_md5
   const urlObj = new URL(embedUrl);
   const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
+  logger.debug({ passMd5Url: passMd5Url.slice(0, 100) }, "[DGHG] step 3 URL");
 
   const cdnBaseUrl = curlFetch(passMd5Url, embedUrl);
+  logger.debug({ cdnBaseLen: cdnBaseUrl.length, cdnBaseSnippet: cdnBaseUrl.slice(0, 100) }, "[DGHG] step 3 result");
+
   if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
-    logger.error("[DGHG] Step 3 FAILED — no CDN URL from pass_md5");
+    logger.error({ cdnBaseUrl: cdnBaseUrl.slice(0, 200) }, "[DGHG] Step 3 FAILED — no CDN URL");
     return null;
   }
 
-  // Step 4: Build final video URL
+  // Step 4: Build final URL
   const expiry = Date.now();
   const finalUrl = `${cdnBaseUrl}?token=${token}&expiry=${expiry}`;
 
-  logger.info({ finalUrl: finalUrl.slice(0, 100) }, "[DGHG] extraction SUCCESS");
+  logger.info({ finalUrl: finalUrl.slice(0, 120) }, "[DGHG] extraction SUCCESS");
 
   let intro: SkipTime | null = null;
   let outro: SkipTime | null = null;

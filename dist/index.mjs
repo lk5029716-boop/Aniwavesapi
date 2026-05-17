@@ -1421,6 +1421,12 @@ function isPlaymogoHost(url) {
   }
 }
 function curlFetch(url, referer) {
+  try {
+    execSync("which curl", { encoding: "utf8" });
+  } catch {
+    logger.error("curl not found on system");
+    return "";
+  }
   const args = [
     "-s",
     "-L",
@@ -1446,15 +1452,20 @@ function curlFetch(url, referer) {
     return result.trim();
   } catch (err) {
     const e = err;
-    logger.warn({ url: url.slice(0, 80), error: e.message }, "curl fetch failed");
+    logger.warn({
+      url: url.slice(0, 80),
+      error: e.message,
+      stderr: e.stderr?.toString().slice(0, 200)
+    }, "curl fetch failed");
     return "";
   }
 }
 async function extractDghg(embedUrl, skipData) {
-  logger.info({ embedUrl: embedUrl.slice(0, 80) }, "[DGHG] starting extraction");
+  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
   const html = curlFetch(embedUrl, "https://aniwaves.ru/");
+  logger.debug({ htmlLen: html.length, htmlSnippet: html.slice(0, 200) }, "[DGHG] step 1 result");
   if (!html) {
-    logger.error("[DGHG] Step 1 FAILED \u2014 could not fetch embed page");
+    logger.error("[DGHG] Step 1 FAILED \u2014 empty response from embed page");
     return null;
   }
   let passMd5Path = null;
@@ -1472,23 +1483,25 @@ async function extractDghg(embedUrl, skipData) {
     token = tokenMatch?.[1] ?? null;
   }
   logger.debug(
-    { passMd5Path: passMd5Path?.slice(0, 60), token: token?.slice(0, 20) },
+    { passMd5Path: passMd5Path?.slice(0, 80), token },
     "[DGHG] extracted creds"
   );
   if (!passMd5Path) {
-    logger.error("[DGHG] Step 2 FAILED \u2014 no pass_md5 path in HTML");
+    logger.error({ htmlSnippet: html.slice(0, 500) }, "[DGHG] Step 2 FAILED \u2014 no pass_md5 path found");
     return null;
   }
   const urlObj = new URL(embedUrl);
   const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
+  logger.debug({ passMd5Url: passMd5Url.slice(0, 100) }, "[DGHG] step 3 URL");
   const cdnBaseUrl = curlFetch(passMd5Url, embedUrl);
+  logger.debug({ cdnBaseLen: cdnBaseUrl.length, cdnBaseSnippet: cdnBaseUrl.slice(0, 100) }, "[DGHG] step 3 result");
   if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
-    logger.error("[DGHG] Step 3 FAILED \u2014 no CDN URL from pass_md5");
+    logger.error({ cdnBaseUrl: cdnBaseUrl.slice(0, 200) }, "[DGHG] Step 3 FAILED \u2014 no CDN URL");
     return null;
   }
   const expiry = Date.now();
   const finalUrl = `${cdnBaseUrl}?token=${token}&expiry=${expiry}`;
-  logger.info({ finalUrl: finalUrl.slice(0, 100) }, "[DGHG] extraction SUCCESS");
+  logger.info({ finalUrl: finalUrl.slice(0, 120) }, "[DGHG] extraction SUCCESS");
   let intro = null;
   let outro = null;
   if (skipData?.intro?.[1] && skipData.intro[1] > 0) {
