@@ -354,54 +354,68 @@ router.get("/debug/dghg", async (req, res): Promise<void> => {
   }
   const type: "sub" | "dub" | "raw" = typeRaw === "dub" ? "dub" : typeRaw === "raw" ? "raw" : "sub";
 
-  // Get servers
-  const servers = await getServers(id, ep, type);
-  const dghgServer = servers.find((s) => s.name.toLowerCase().includes("dghg"));
+  try {
+    // Get servers
+    const servers = await getServers(id, ep, type);
+    const dghgServer = servers.find((s) => s.name.toLowerCase().includes("dghg"));
 
-  if (!dghgServer) {
-    res.status(404).json({ error: "No DGHG server found", availableServers: servers.map((s) => s.name) });
-    return;
+    if (!dghgServer) {
+      res.status(404).json({ error: "No DGHG server found", availableServers: servers.map((s) => s.name) });
+      return;
+    }
+
+    // Get embed URL
+    const sourcesResult = await getEmbedUrl(dghgServer.id, id);
+    if (!sourcesResult?.url) {
+      res.status(502).json({ error: "Could not resolve embed URL", server: dghgServer.name });
+      return;
+    }
+
+    // Test Playwright launch
+    let playwrightTest: Record<string, unknown> = {};
+    try {
+      const { chromium } = await import("playwright");
+      playwrightTest.imported = true;
+      const browser = await chromium.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+      });
+      playwrightTest.launched = true;
+      const context = await browser.newContext({
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        extraHTTPHeaders: { Referer: "https://aniwaves.ru/" },
+      });
+      const page = await context.newPage();
+      const embedUrl = sourcesResult.url;
+      const navPromise = page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch((e: Error) => {
+        playwrightTest.navError = e.message;
+      });
+      await navPromise;
+      const html = await page.content();
+      playwrightTest.htmlLength = html.length;
+      playwrightTest.pageTitle = await page.title().catch(() => "unknown");
+      playwrightTest.pageUrl = page.url();
+
+      // Try to extract pass_md5
+      const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
+      playwrightTest.hasPassMd5 = !!passMd5Match;
+      playwrightTest.passMd5Path = passMd5Match?.[1]?.slice(0, 100) ?? null;
+
+      await browser.close();
+      playwrightTest.closed = true;
+    } catch (e) {
+      playwrightTest.error = (e as Error).message;
+      playwrightTest.stack = (e as Error).stack?.split("\n").slice(0, 5).join("\n");
+    }
+
+    res.json({
+      server: dghgServer.name,
+      embedUrl: sourcesResult.url.slice(0, 100),
+      playwrightTest,
+    });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message, stack: (e as Error).stack?.split("\n").slice(0, 5).join("\n") });
   }
-
-  // Get embed URL
-  const sourcesResult = await getEmbedUrl(dghgServer.id, id);
-  if (!sourcesResult?.url) {
-    res.status(502).json({ error: "Could not resolve embed URL", server: dghgServer.name });
-    return;
-  }
-
-  // Run DGHG extraction with full debug
-  const { extractDghg } = await import("../lib/anime/providers/dghg.js");
-
-  // Monkey-patch logger to capture all logs
-  const logs: string[] = [];
-  const origInfo = logger.info.bind(logger);
-  const origError = logger.error.bind(logger);
-  const origDebug = logger.debug.bind(logger);
-  const origWarn = logger.warn.bind(logger);
-  logger.info = ((...args: unknown[]) => { logs.push(`INFO: ${JSON.stringify(args[0])}`); origInfo(...args); }) as typeof logger.info;
-  logger.error = ((...args: unknown[]) => { logs.push(`ERROR: ${JSON.stringify(args[0])}`); origError(...args); }) as typeof logger.error;
-  logger.debug = ((...args: unknown[]) => { logs.push(`DEBUG: ${JSON.stringify(args[0])}`); origDebug(...args); }) as typeof logger.debug;
-  logger.warn = ((...args: unknown[]) => { logs.push(`WARN: ${JSON.stringify(args[0])}`); origWarn(...args); }) as typeof logger.warn;
-
-  const stream = await extractDghg(sourcesResult.url, {
-    intro: sourcesResult.skip_data?.intro,
-    outro: sourcesResult.skip_data?.outro,
-  });
-
-  // Restore logger
-  logger.info = origInfo;
-  logger.error = origError;
-  logger.debug = origDebug;
-  logger.warn = origWarn;
-
-  res.json({
-    success: !!stream,
-    server: dghgServer.name,
-    embedUrl: sourcesResult.url.slice(0, 100),
-    stream: stream ? { provider: stream.provider, m3u8: stream.m3u8?.slice(0, 150) } : null,
-    logs: logs.slice(0, 50),
-  });
 });
 
 export default router;
