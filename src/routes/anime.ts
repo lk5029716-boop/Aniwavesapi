@@ -334,4 +334,31 @@ router.get("/proxy", async (req, res): Promise<void> => {
   }
 });
 
+// Quick Playwright DGHG test
+router.get("/debug/dghg-pw", async (req, res): Promise<void> => {
+  const linkId = req.query["linkId"] as string | undefined;
+  if (!linkId) { res.status(400).json({ error: "Missing linkId" }); return; }
+
+  try {
+    const { getEmbedUrl } = await import("../lib/anime/scraper.js");
+    const sourcesResult = await getEmbedUrl(linkId);
+    if (!sourcesResult?.url) { res.status(502).json({ error: "no embed URL" }); return; }
+
+    const embedUrl = sourcesResult.url;
+    const { chromium } = await import("playwright");
+    const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+    const page = await browser.newPage();
+    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+    await page.waitForTimeout(3000);
+    const html = await page.content();
+    await browser.close();
+
+    const m = html.match(/pass_md5\/([^'"\s,)]+)/);
+
+    res.json({ embedUrl, htmlLen: html.length, passMd5: m?.[1] ?? null, snippet: html.slice(0, 300) });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 export default router;
