@@ -10,9 +10,24 @@ import { Router as Router3 } from "express";
 
 // src/routes/health.ts
 import { Router } from "express";
+import { execSync } from "child_process";
 var router = Router();
 router.get("/health", (_req, res) => {
-  res.json({ status: "ok", timestamp: (/* @__PURE__ */ new Date()).toISOString() });
+  let curlAvailable2 = false;
+  let nodeVersion = process.version;
+  try {
+    execSync("which curl", { encoding: "utf8", timeout: 5e3 });
+    curlAvailable2 = true;
+  } catch {
+    curlAvailable2 = false;
+  }
+  res.json({
+    status: "ok",
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    curl: curlAvailable2,
+    node: nodeVersion,
+    env: process.env.NODE_ENV || "development"
+  });
 });
 var health_default = router;
 
@@ -1394,7 +1409,7 @@ function isWeneverbeenfreeHost(url) {
 }
 
 // src/lib/anime/providers/dghg.ts
-import { execSync, execFileSync } from "child_process";
+import { execSync as execSync2, execFileSync } from "child_process";
 import axios6 from "axios";
 var DOOD_HOSTS = [
   "playmogo.com",
@@ -1417,7 +1432,7 @@ var curlAvailable = null;
 function isCurlAvailable() {
   if (curlAvailable !== null) return curlAvailable;
   try {
-    execSync("which curl", { encoding: "utf8", timeout: 5e3 });
+    execSync2("which curl", { encoding: "utf8", timeout: 5e3 });
     curlAvailable = true;
     logger.info("curl is available");
   } catch {
