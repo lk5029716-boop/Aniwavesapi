@@ -89,9 +89,6 @@ router.get("/servers", async (req, res): Promise<void> => {
 
 /**
  * GET /api/stream?id=naruto-76396&ep=1&type=sub&server=vidplay
- *
- * When a specific server name is given, only tries that server (no fallback).
- * When no server is given, tries all in order.
  */
 router.get("/stream", async (req, res): Promise<void> => {
   const id = Array.isArray(req.query["id"])
@@ -136,7 +133,7 @@ router.get("/stream", async (req, res): Promise<void> => {
 
   req.log.debug({ servers: servers.map((s) => s.name) }, "available servers");
 
-  // 2. If a specific server was requested, only try that server (no fallback)
+  // 2. If a specific server was requested, only try that server
   if (serverName) {
     const targetServer = servers.find((s) =>
       s.name.toLowerCase().includes(serverName.toLowerCase())
@@ -150,23 +147,16 @@ router.get("/stream", async (req, res): Promise<void> => {
       return;
     }
 
-    req.log.info(
-      { serverName: targetServer.name, linkId: targetServer.id.slice(0, 30) },
-      "trying specific server (no fallback)"
-    );
-
     const sourcesResult = await getEmbedUrl(targetServer.id, id);
     if (!sourcesResult?.url) {
       res.status(502).json({ error: `Could not resolve embed URL for server "${serverName}"` });
       return;
     }
 
-    const streamResult = await extractStream(sourcesResult.url, targetServer.name, {
+    const stream = await extractStream(sourcesResult.url, targetServer.name, {
       intro: sourcesResult.skip_data?.intro,
       outro: sourcesResult.skip_data?.outro,
     });
-
-    const stream = streamResult;
 
     if (stream?.m3u8) {
       req.log.info({ serverName: targetServer.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
@@ -174,9 +164,13 @@ router.get("/stream", async (req, res): Promise<void> => {
       return;
     }
 
+    // Include DGHG debug info if available
+    const dghgDebug = stream && '_dghgDebug' in stream ? (stream as Record<string, unknown>)._dghgDebug : null;
+
     res.status(502).json({
       error: `Server "${serverName}" failed to extract stream`,
       server: targetServer.name,
+      debug: dghgDebug,
     });
     return;
   }
@@ -223,9 +217,6 @@ router.get("/stream", async (req, res): Promise<void> => {
 
 /**
  * GET /api/proxy?url=https://...&referer=https://...
- *
- * Proxies a stream URL (m3u8, ts segment, vtt, etc.) through the server
- * with the correct Referer / Origin headers that the CDN requires.
  */
 router.get("/proxy", async (req, res): Promise<void> => {
   const urlParam = Array.isArray(req.query["url"])
@@ -255,6 +246,8 @@ router.get("/proxy", async (req, res): Promise<void> => {
       referer = "https://play.echovideo.ru/";
     } else if (host.includes("weneverbeenfree") || host.includes("owphbf") || host.includes("sprintcdn")) {
       referer = "https://weneverbeenfree.com/";
+    } else if (host.includes("playmogo") || host.includes("doodcdn") || host.includes("doodstream") || host.includes("cloudatacdn")) {
+      referer = "https://playmogo.com/";
     } else {
       referer = "https://play.echovideo.ru/";
     }
@@ -296,29 +289,20 @@ router.get("/proxy", async (req, res): Promise<void> => {
       upstream.data.on("end", () => {
         const body = Buffer.concat(chunks).toString("utf8");
         const encodedReferer = encodeURIComponent(referer ?? "https://play.echovideo.ru/");
-
-        // Compute base URL for resolving relative paths
         const baseUrl = urlParam.substring(0, urlParam.lastIndexOf("/") + 1);
 
         const rewritten = body
           .split("\n")
           .map((line) => {
             const trimmed = line.trim();
-
             if (!trimmed) return line;
-
-            // Tag lines with URI="..." (e.g. #EXT-X-KEY) — rewrite the URI value
             if (trimmed.startsWith("#") && trimmed.includes('URI="')) {
               return trimmed.replace(/URI="([^"]+)"/g, (_m, uri: string) => {
                 const abs = uri.startsWith("http") ? uri : baseUrl + uri;
                 return `URI="/api/proxy?url=${encodeURIComponent(abs)}&referer=${encodedReferer}"`;
               });
             }
-
-            // Other tag lines — pass through unchanged
             if (trimmed.startsWith("#")) return line;
-
-            // Segment / sub-playlist URL (relative or absolute) — proxy it
             const abs = trimmed.startsWith("http") ? trimmed : baseUrl + trimmed;
             return `/api/proxy?url=${encodeURIComponent(abs)}&referer=${encodedReferer}`;
           })
