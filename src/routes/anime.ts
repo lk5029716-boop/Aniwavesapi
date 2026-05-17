@@ -426,10 +426,13 @@ router.get("/debug/dghg", async (req, res): Promise<void> => {
         steps.step5_nav = `commit failed: ${navError.slice(0, 100)}`;
       }
 
-      // Wait a bit for page to load
-      await page.waitForTimeout(3000).catch(() => {});
+      // Wait for page to fully load and execute JS (including Cloudflare challenge)
+      steps.step5_waiting = "starting";
+      await page.waitForTimeout(8000).catch(() => {});
+      steps.step5_waiting = "done";
 
-      const html = await page.content().catch((e: Error) => {
+      // Check if pass_md5 appeared after JS execution
+      let html = await page.content().catch((e: Error) => {
         steps.step5_contentError = e.message;
         return "";
       });
