@@ -18,7 +18,7 @@ export async function extractStream(
     "dispatching to provider extractor"
   );
 
-  // DGHG / myvidplay.com — pass_md5 HTTP method
+  // DGHG / myvidplay.com / playmogo.com — pass_md5 HTTP method
   if (
     isPlaymogoHost(embedUrl) ||
     lowerName.includes("dghg") ||
@@ -69,13 +69,12 @@ export async function extractStream(
     return extractVidplay(embedUrl);
   }
 
-  // Unknown provider — try embed-N pattern (Echovideo-style) first, then others
+  // Unknown provider — try all extractors in order
   logger.warn(
     { serverName, embedUrl: embedUrl.slice(0, 80) },
     "unknown provider, trying all extractors in order"
   );
 
-  // Check if URL looks like an echovideo embed (has /embed-N/ in path)
   if (/\/embed-\d+\//.test(embedUrl)) {
     const echoResult = await extractEchovideo(embedUrl, skipData);
     if (echoResult?.m3u8) return echoResult;

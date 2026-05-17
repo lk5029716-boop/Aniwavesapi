@@ -18,7 +18,7 @@ var health_default = router;
 
 // src/routes/anime.ts
 import { Router as Router2 } from "express";
-import axios6 from "axios";
+import axios7 from "axios";
 
 // src/lib/anime/scraper.ts
 import axios from "axios";
@@ -1394,7 +1394,8 @@ function isWeneverbeenfreeHost(url) {
 }
 
 // src/lib/anime/providers/dghg.ts
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
+import axios6 from "axios";
 var DOOD_HOSTS = [
   "playmogo.com",
   "myvidplay.com",
@@ -1412,6 +1413,17 @@ var DOOD_HOSTS = [
   "dood.watch"
 ];
 var UA2 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var curlAvailable = null;
+function isCurlAvailable() {
+  if (curlAvailable !== null) return curlAvailable;
+  try {
+    execSync("which curl", { encoding: "utf8", timeout: 5e3 });
+    curlAvailable = true;
+  } catch {
+    curlAvailable = false;
+  }
+  return curlAvailable;
+}
 function isPlaymogoHost(url) {
   try {
     const host = new URL(url).hostname;
@@ -1422,50 +1434,62 @@ function isPlaymogoHost(url) {
 }
 function curlFetch(url, referer) {
   try {
-    execSync("which curl", { encoding: "utf8" });
-  } catch {
-    logger.error("curl not found on system");
-    return "";
-  }
-  const args = [
-    "-s",
-    "-L",
-    "-A",
-    UA2,
-    "-H",
-    "Accept: text/html,*/*",
-    "-H",
-    `Referer: ${referer || "https://aniwaves.ru/"}`,
-    "--max-redirs",
-    "5",
-    "--connect-timeout",
-    "15",
-    "--max-time",
-    "30",
-    url
-  ];
-  try {
-    const result = execSync("curl " + args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" "), {
-      encoding: "utf8",
-      timeout: 35e3
-    });
-    return result.trim();
+    const result = execFileSync("curl", [
+      "-s",
+      "-L",
+      "-A",
+      UA2,
+      "-H",
+      "Accept: text/html,*/*",
+      "-H",
+      `Referer: ${referer}`,
+      "--max-redirs",
+      "5",
+      "--connect-timeout",
+      "15",
+      "--max-time",
+      "30",
+      "-w",
+      "\n%{http_code}",
+      url
+    ], { encoding: "utf8", timeout: 35e3 });
+    const lines = result.trim().split("\n");
+    const httpCode = lines[lines.length - 1];
+    const body = lines.slice(0, -1).join("\n");
+    if (httpCode !== "200") {
+      logger.warn({ url: url.slice(0, 80), httpCode }, "curl non-200 response");
+      return "";
+    }
+    return body;
   } catch (err) {
     const e = err;
-    logger.warn({
-      url: url.slice(0, 80),
-      error: e.message,
-      stderr: e.stderr?.toString().slice(0, 200)
-    }, "curl fetch failed");
+    logger.warn({ url: url.slice(0, 80), error: e.message }, "curl fetch failed");
     return "";
   }
 }
+async function axiosFetch(url, referer) {
+  const resp = await axios6.get(url, {
+    timeout: 15e3,
+    headers: {
+      "User-Agent": UA2,
+      Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+      Referer: referer
+    },
+    maxRedirects: 5
+  });
+  return resp.data;
+}
 async function extractDghg(embedUrl, skipData) {
-  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
-  const html = curlFetch(embedUrl, "https://aniwaves.ru/");
-  logger.debug({ htmlLen: html.length, htmlSnippet: html.slice(0, 200) }, "[DGHG] step 1 result");
+  logger.info({ embedUrl: embedUrl.slice(0, 100), curl: isCurlAvailable() }, "[DGHG] starting extraction");
+  let html;
+  if (isCurlAvailable()) {
+    html = curlFetch(embedUrl, "https://aniwaves.ru/");
+  } else {
+    html = await axiosFetch(embedUrl, "https://aniwaves.ru/");
+  }
   if (!html) {
-    logger.error("[DGHG] Step 1 FAILED \u2014 empty response from embed page");
+    logger.error("[DGHG] Step 1 FAILED \u2014 empty response");
     return null;
   }
   let passMd5Path = null;
@@ -1482,21 +1506,21 @@ async function extractDghg(embedUrl, skipData) {
     const tokenMatch = html.match(/cookieIndex\s*=\s*['"]([^'"]+)['"]/);
     token = tokenMatch?.[1] ?? null;
   }
-  logger.debug(
-    { passMd5Path: passMd5Path?.slice(0, 80), token },
-    "[DGHG] extracted creds"
-  );
-  if (!passMd5Path) {
-    logger.error({ htmlSnippet: html.slice(0, 500) }, "[DGHG] Step 2 FAILED \u2014 no pass_md5 path found");
+  logger.debug({ passMd5Path: passMd5Path?.slice(0, 100), token }, "[DGHG] extracted creds");
+  if (!passMd5Path || !token) {
+    logger.error({ hasPassMd5: !!passMd5Path, hasToken: !!token }, "[DGHG] Step 2 FAILED");
     return null;
   }
   const urlObj = new URL(embedUrl);
   const passMd5Url = `https://${urlObj.hostname}/pass_md5/${passMd5Path}`;
-  logger.debug({ passMd5Url: passMd5Url.slice(0, 100) }, "[DGHG] step 3 URL");
-  const cdnBaseUrl = curlFetch(passMd5Url, embedUrl);
-  logger.debug({ cdnBaseLen: cdnBaseUrl.length, cdnBaseSnippet: cdnBaseUrl.slice(0, 100) }, "[DGHG] step 3 result");
+  let cdnBaseUrl;
+  if (isCurlAvailable()) {
+    cdnBaseUrl = curlFetch(passMd5Url, embedUrl);
+  } else {
+    cdnBaseUrl = await axiosFetch(passMd5Url, embedUrl);
+  }
   if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
-    logger.error({ cdnBaseUrl: cdnBaseUrl.slice(0, 200) }, "[DGHG] Step 3 FAILED \u2014 no CDN URL");
+    logger.error({ cdnBase: cdnBaseUrl?.slice(0, 100) }, "[DGHG] Step 3 FAILED");
     return null;
   }
   const expiry = Date.now();
@@ -1740,7 +1764,7 @@ router2.get("/proxy", async (req, res) => {
     "proxying stream URL"
   );
   try {
-    const upstream = await axios6.get(urlParam, {
+    const upstream = await axios7.get(urlParam, {
       responseType: "stream",
       timeout: 3e4,
       headers: {
