@@ -346,16 +346,46 @@ router.get("/debug/dghg-pw", async (req, res): Promise<void> => {
 
     const embedUrl = sourcesResult.url;
     const { chromium } = await import("playwright");
-    const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
-    const page = await browser.newPage();
-    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-    await page.waitForTimeout(3000);
+    const browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"],
+    });
+    const context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      extraHTTPHeaders: { Referer: "https://aniwaves.ru/" },
+    });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => false });
+      // @ts-ignore
+      window.chrome = { runtime: {} };
+    });
+    const page = await context.newPage();
+
+    // Intercept ALL network requests to see what's happening
+    const allRequests: string[] = [];
+    page.on("request", (req) => {
+      allRequests.push(`${req.method()} ${req.url().slice(0, 120)}`);
+    });
+
+    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+    await page.waitForTimeout(10000); // Wait 10s for Turnstile to solve
     const html = await page.content();
+
+    // Check if Turnstile is still showing
+    const hasTurnstile = html.toLowerCase().includes("turnstile") || html.toLowerCase().includes("cf-challenge");
+    const hasVideoPlayer = html.includes("pass_md5") || html.includes("video_player") || html.includes(".m3u8");
+
     await browser.close();
 
-    const m = html.match(/pass_md5\/([^'"\s,)]+)/);
-
-    res.json({ embedUrl, htmlLen: html.length, passMd5: m?.[1] ?? null, snippet: html.slice(0, 300) });
+    res.json({
+      embedUrl,
+      htmlLen: html.length,
+      hasTurnstile,
+      hasVideoPlayer,
+      passMd5: (html.match(/pass_md5\/([^'"\s,)]+)/) ?? [])[1] ?? null,
+      allRequests: allRequests.slice(0, 30),
+      htmlFull: html,
+    });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
