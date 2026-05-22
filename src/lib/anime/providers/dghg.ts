@@ -2,13 +2,15 @@
  * DGHG / PlayMogo / DoodStream provider extractor.
  *
  * The embed page (myvidplay.com → playmogo.com / doodstream.com) is protected
- * by Cloudflare Turnstile. The HTML only contains a Turnstile challenge — the
- * actual video player JS (with pass_md5 / m3u8) only loads AFTER the challenge
- * is solved by a real browser.
+ * by Cloudflare Turnstile. The flow:
  *
- * Strategy: Use Playwright headless Chromium to load the page, let the browser
- * solve the Turnstile challenge, then intercept the m3u8 network request that
- * the video player makes. This is the same approach used by the BYFMS extractor.
+ *   1. Page loads with a play button (.captcha_l) and Turnstile hidden
+ *   2. User clicks play → Turnstile challenge renders
+ *   3. Turnstile solves → callback fires → GET /dood?op=validate&gc_response=...
+ *   4. /dood endpoint returns JSON with the stream URL
+ *
+ * Strategy: Use Playwright to click the play button, wait for Turnstile to be
+ * solved by the browser, intercept the /dood response to get the stream URL.
  */
 import { logger } from "../../logger.js";
 import type { StreamSource, SkipTime, Subtitle } from "../types.js";
@@ -17,10 +19,6 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const ANIWAVES_REFERER = "https://aniwaves.ru/";
-const ANIWAVES_ORIGIN = "https://aniwaves.ru";
-
-const M3U8_TIMEOUT_MS = 45_000;  // Turnstile can take ~30s to solve
-const PAGE_LOAD_TIMEOUT_MS = 30_000;
 
 const DOOD_HOSTS = [
   "playmogo.com", "myvidplay.com", "doodstream.com", "dood.la",
@@ -68,10 +66,9 @@ export async function extractDghg(
     const context = await browser.newContext({
       userAgent: UA,
       javaScriptEnabled: true,
-      ignoreHTTPSErrors: true,
+      ignoreHTTPSErors: true,
       extraHTTPHeaders: {
         Referer: ANIWAVES_REFERER,
-        Origin: ANIWAVES_ORIGIN,
       },
     });
 
@@ -86,93 +83,122 @@ export async function extractDghg(
 
     const page = await context.newPage();
 
-    const m3u8Urls: string[] = [];
-    const subtitleUrls: { url: string; label: string }[] = [];
-    let thumbnailUrl: string | null = null;
+    let streamUrl: string | null = null;
 
-    // Intercept network requests to capture m3u8 URLs
-    page.on("request", (req) => {
-      const url = req.url();
-      if (url.includes(".m3u8")) {
-        logger.info({ url: url.slice(0, 130) }, "[DGHG] m3u8 request intercepted");
-        if (!m3u8Urls.includes(url)) m3u8Urls.push(url);
-      }
-      if (url.includes(".vtt") || url.includes(".srt")) {
-        const label = (() => {
-          try { return new URL(url).searchParams.get("label") ?? "unknown"; }
-          catch { return "unknown"; }
-        })();
-        subtitleUrls.push({ url, label });
-      }
-      if ((url.includes("thumbnail") || url.includes("sprite") || url.includes("preview")) && !thumbnailUrl) {
-        thumbnailUrl = url;
-      }
-    });
-
-    // Also check responses for m3u8 URLs embedded in JSON
+    // Intercept the /dood endpoint response which contains the stream URL
     page.on("response", async (resp) => {
       const url = resp.url();
-      if (url.includes(".m3u8") && !m3u8Urls.includes(url)) {
-        m3u8Urls.push(url);
-        return;
-      }
-      const ct = resp.headers()["content-type"] ?? "";
-      if (ct.includes("application/json") && m3u8Urls.length === 0) {
+      if (url.includes("/dood?op=validate") || url.includes("/dood?")) {
+        logger.info({ url: url.slice(0, 120) }, "[DGHG] /dood response intercepted");
         try {
           const text = await resp.text();
-          if (text.includes(".m3u8")) {
-            const match = text.match(/https?:\/\/[^\s"'\\]+\.m3u8[^\s"'\\]*/);
-            if (match && !m3u8Urls.includes(match[0])) {
-              m3u8Urls.push(match[0]);
+          logger.debug({ body: text.slice(0, 300) }, "[DGHG] /dood response body");
+          // The response might be a direct URL or JSON
+          const trimmed = text.trim();
+          if (trimmed.startsWith("http") && (trimmed.includes(".m3u8") || trimmed.includes(".mp4") || trimmed.includes("stream"))) {
+            streamUrl = trimmed;
+            logger.info({ streamUrl: streamUrl.slice(0, 120) }, "[DGHG] got stream URL from /dood");
+          } else {
+            // Try to parse as JSON
+            try {
+              const json = JSON.parse(trimmed);
+              const possibleUrl = json.file || json.url || json.link || json.src || json.stream || JSON.stringify(json);
+              if (possibleUrl && possibleUrl.startsWith("http")) {
+                streamUrl = possibleUrl;
+                logger.info({ streamUrl: streamUrl.slice(0, 120) }, "[DGHG] got stream URL from /dood JSON");
+              }
+            } catch {
+              // Not JSON, might be a direct URL with different format
+              if (trimmed.startsWith("http")) {
+                streamUrl = trimmed;
+              }
             }
           }
-        } catch { /* ignore */ }
+        } catch (e) {
+          logger.warn({ error: (e as Error).message }, "[DGHG] failed to parse /dood response");
+        }
+      }
+
+      // Also check for any m3u8 in any response
+      if (!streamUrl) {
+        const ct = resp.headers()["content-type"] ?? "";
+        if (ct.includes("application/json")) {
+          try {
+            const text = await resp.text();
+            if (text.includes(".m3u8") || text.includes(".mp4")) {
+              const match = text.match(/https?:\/\/[^\s"'\\]+\.(?:m3u8|mp4)[^\s"'\\]*/);
+              if (match && !streamUrl) {
+                streamUrl = match[0];
+                logger.info({ streamUrl: streamUrl.slice(0, 120) }, "[DGHG] got stream URL from JSON response");
+              }
+            }
+          } catch { /* ignore */ }
+        }
       }
     });
 
-    // Wait for m3u8 with a long timeout (Turnstile challenge takes time)
-    const waitForM3u8 = (timeoutMs: number): Promise<void> =>
-      new Promise((resolve) => {
-        const iv = setInterval(() => {
-          if (m3u8Urls.length > 0) { clearInterval(iv); resolve(); }
-        }, 500);
-        setTimeout(() => { clearInterval(iv); resolve(); }, timeoutMs);
-      });
+    // Also intercept network requests for m3u8
+    page.on("request", (req) => {
+      const url = req.url();
+      if (url.includes(".m3u8") && !streamUrl) {
+        streamUrl = url;
+        logger.info({ url: url.slice(0, 130) }, "[DGHG] m3u8 request intercepted");
+      }
+    });
 
-    logger.info("[DGHG] navigating to embed page (waiting for Turnstile + video player JS)");
+    logger.info("[DGHG] navigating to embed page");
     await page
-      .goto(embedUrl, { waitUntil: "domcontentloaded", timeout: PAGE_LOAD_TIMEOUT_MS })
+      .goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 30000 })
       .catch((err: Error) => {
         logger.warn({ error: err.message }, "[DGHG] page.goto error, continuing");
       });
 
-    // Wait for the Turnstile challenge to be solved and video player to load m3u8
-    await waitForM3u8(M3U8_TIMEOUT_MS);
+    // Wait for page to fully load and Turnstile to initialize
+    await page.waitForTimeout(3000);
 
-    if (m3u8Urls.length === 0) {
-      // Fallback: try to extract pass_md5 from HTML (works if Turnstile already solved)
-      logger.warn("[DGHG] no m3u8 intercepted, trying pass_md5 fallback");
-      const html = await page.content();
-      const passMd5Match = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
-      if (passMd5Match) {
-        logger.info("[DGHG] found pass_md5 in HTML, using direct extraction");
-        // Could implement direct pass_md5 extraction here as fallback
+    // Click the play button to trigger the Turnstile challenge
+    logger.info("[DGHG] clicking play button to trigger Turnstile");
+    try {
+      await page.click(".captcha_l", { timeout: 5000 });
+    } catch (e) {
+      // Try alternative selectors
+      try {
+        await page.click(".vjs-big-play-button", { timeout: 5000 });
+      } catch (e2) {
+        // Try pressing Enter/clicking the video player area
+        try {
+          await page.click("#video_player", { timeout: 5000 });
+        } catch (e3) {
+          logger.warn("[DGHG] could not find play button, trying keyboard");
+          await page.keyboard.press("Enter").catch(() => {});
+        }
       }
+    }
 
+    // Wait for Turnstile to solve and /dood callback to fire
+    logger.info("[DGHG] waiting for Turnstile + /dood callback (up to 45s)");
+
+    const waitForStream = (timeoutMs: number): Promise<void> =>
+      new Promise((resolve) => {
+        const iv = setInterval(() => {
+          if (streamUrl) { clearInterval(iv); resolve(); }
+        }, 500);
+        setTimeout(() => { clearInterval(iv); resolve(); }, timeoutMs);
+      });
+
+    await waitForStream(45000);
+
+    if (!streamUrl) {
       const pageTitle = await page.title().catch(() => "unknown");
+      const html = await page.content().catch(() => "");
       logger.error(
         { embedUrl: embedUrl.slice(0, 90), pageTitle, htmlLen: html.length },
-        "[DGHG] no m3u8 intercepted — Turnstile may have blocked the browser"
+        "[DGHG] no stream URL extracted — Turnstile may have blocked the browser"
       );
       return null;
     }
 
-    const m3u8 =
-      m3u8Urls.find((u) => u.includes("master")) ??
-      m3u8Urls.find((u) => !u.includes("segment") && !u.includes("chunk") && !u.includes(".ts?")) ??
-      m3u8Urls[0];
-
-    logger.info({ m3u8: m3u8.slice(0, 130), candidates: m3u8Urls.length }, "[DGHG] extraction SUCCESS");
+    logger.info({ streamUrl: streamUrl.slice(0, 130) }, "[DGHG] extraction SUCCESS");
 
     let intro: SkipTime | null = null;
     let outro: SkipTime | null = null;
@@ -183,18 +209,12 @@ export async function extractDghg(
       outro = { start: skipData.outro[0], end: skipData.outro[1] };
     }
 
-    const subtitles: Subtitle[] = subtitleUrls.map((s, i) => ({
-      lang: `track-${i}`,
-      label: s.label,
-      url: s.url,
-    }));
-
     return {
       type: "direct",
       provider: "dghg",
-      m3u8,
-      subtitles,
-      thumbnails: thumbnailUrl,
+      m3u8: streamUrl,
+      subtitles: [],
+      thumbnails: null,
       intro,
       outro,
     };
