@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DGHG Player</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#000;color:#fff;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center}
+#player-container{width:100%;max-width:900px;background:#111;border-radius:8px;overflow:hidden;margin:20px}
+video{width:100%;display:block;background:#000;min-height:400px}
+#status{text-align:center;padding:40px;font-size:18px;color:#888}
+#status .icon{font-size:48px;margin-bottom:16px}
+#status .msg{margin-bottom:8px}
+#status .sub{font-size:14px;color:#555}
+#error{display:none;text-align:center;padding:40px;color:#ff4444}
+#retry-btn{background:#00d4ff;color:#000;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;margin-top:16px;display:none}
+#loading{display:none;text-align:center;padding:20px;color:#ffaa00;font-size:14px}
+.spin{animation:spin 1s linear infinite;display:inline-block}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<div id="player-container">
+  <div id="status">
+    <div class="icon">⏳</div>
+    <div class="msg">Loading stream...</div>
+    <div class="sub" id="status-sub">Initializing</div>
+  </div>
+  <div id="loading"><span class="spin">🔄</span> <span id="loading-msg">Fetching stream...</span></div>
+  <div id="error">
+    <div class="icon">❌</div>
+    <div class="msg" id="error-msg">Failed to load stream</div>
+    <button id="retry-btn" onclick="location.reload()">Retry</button>
+  </div>
+  <video id="video" controls playsinline style="display:none"></video>
+</div>
+
+<script>
+(function(){
+  const params = new URLSearchParams(location.search);
+  const videoId = params.get('id');
+  const host = params.get('host') || 'myvidplay.com';
+  const workerUrl = params.get('worker') || 'https://dghg-proxy.lk5029716.workers.dev';
+  const expiry = Date.now();
+  
+  if(!videoId){
+    showError('Missing video ID. Usage: ?id=xxx&host=playmogo.com');
+    return;
+  }
+  
+  const proxyPageUrl = workerUrl + '/?id=' + encodeURIComponent(videoId) + '&host=' + encodeURIComponent(host);
+  const resultEndpoint = workerUrl + '/__dghg_result?id=' + encodeURIComponent(videoId);
+  
+  let phase = 'turnstile';
+  
+  function setStatus(icon, msg, sub){
+    document.getElementById('status').innerHTML = '<div class="icon">'+icon+'</div><div class="msg">'+msg+'</div><div class="sub">'+sub+'</div>';
+  }
+  
+  function showLoading(msg){
+    document.getElementById('status').style.display='none';
+    document.getElementById('loading').style.display='block';
+    document.getElementById('loading-msg').textContent = msg;
+  }
+  
+  function showError(msg){
+    document.getElementById('status').style.display='none';
+    document.getElementById('loading').style.display='none';
+    document.getElementById('error').style.display='block';
+    document.getElementById('error-msg').textContent = msg;
+    document.getElementById('retry-btn').style.display='inline-block';
+  }
+  
+  function showPlayer(){
+    document.getElementById('status').style.display='none';
+    document.getElementById('loading').style.display='none';
+    document.getElementById('video').style.display='block';
+  }
+  
+  function setPhase(p){
+    phase = p;
+    if(p==='turnstile'){
+      setStatus('🔐','Solving Turnstile...','Click the play button on the embed page to continue');
+    } else if(p==='polling'){
+      showLoading('Waiting for pass_md5 extraction...');
+    } else if(p==='cdn'){
+      showLoading('Fetching CDN URL...');
+    }
+  }
+  
+  // Open proxy page in hidden iframe (same-origin won't work due to CORS, so use popup)
+  function openTurnstile(){
+    setPhase('turnstile');
+    
+    // Open popup for Turnstile solving
+    const w = 600, h = 600;
+    const left = (screen.width - w) / 2;
+    const top = (screen.height - h) / 2;
+    const popup = window.open(proxyPageUrl, 'dghg_turnstile', 
+      'width='+w+',height='+h+',left='+left+',top='+top+',scrollbars=yes,resizable=yes');
+    
+    if(!popup){
+      // Popup blocked — use iframe approach
+      useIframeApproach();
+      return;
+    }
+    
+    // Poll for result
+    startPolling();
+  }
+  
+  function useIframeApproach(){
+    setStatus('🔐','Please solve the Turnstile challenge below','Complete the challenge to continue loading your stream');
+    
+    const iframe = document.createElement('iframe');
+    iframe.src = proxyPageUrl;
+    iframe.style.cssText = 'width:100%;height:400px;border:1px solid #333;border-radius:8px;margin-top:16px;background:#111';
+    document.getElementById('status').appendChild(iframe);
+    
+    startPolling();
+  }
+  
+  let pollCount = 0;
+  const MAX_POLL = 120; // 2 minutes
+  
+  function startPolling(){
+    setPhase('polling');
+    
+    const interval = setInterval(async () => {
+      pollCount++;
+      
+      if(pollCount > MAX_POLL){
+        clearInterval(interval);
+        showError('Timed out. Please try again.');
+        return;
+      }
+      
+      try {
+        const resp = await fetch(resultEndpoint);
+        const data = await resp.json();
+        
+        if(data.status === 'done'){
+          clearInterval(interval);
+          setPhase('cdn');
+          
+          const passMd5Url = data.passMd5Url;
+          const token = passMd5Url.split('/').pop();
+          
+          // Fetch CDN URL
+          try {
+            const cdnResp = await fetch('https://' + host + '/' + passMd5Url, {
+              headers: {
+                'Referer': 'https://' + host + '/e/' + videoId,
+              }
+            });
+            const cdnUrl = (await cdnResp.text()).trim();
+            
+            if(cdnUrl.startsWith('http')){
+              // Construct m3u8 URL
+              const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+              let randomSuffix = '';
+              for(let i = 0; i < 10; i++) randomSuffix += chars.charAt(Math.floor(Math.random() * chars.length));
+              const m3u8 = cdnUrl + randomSuffix + '?token=' + token + '&expiry=' + expiry;
+              
+              playStream(m3u8);
+            } else {
+              showError('Invalid CDN URL received');
+            }
+          } catch(e) {
+            showError('Failed to fetch CDN URL: ' + e.message);
+          }
+        }
+      } catch(e) {
+        // Not ready yet, keep polling
+      }
+    }, 2000);
+  }
+  
+  function playStream(m3u8Url){
+    showLoading('Starting playback...');
+    
+    const video = document.getElementById('video');
+    
+    if(Hls.isSupported()){
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+      });
+      hls.loadSource(m3u8Url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        showPlayer();
+        video.play().catch(() => {});
+      });
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        if(data.fatal){
+          showError('Fatal playback error. Please try again.');
+          hls.destroy();
+        }
+      });
+    } else if(video.canPlayType('application/vnd.apple.mpegurl')){
+      video.src = m3u8Url;
+      video.addEventListener('loadedmetadata', () => {
+        showPlayer();
+        video.play().catch(() => {});
+      });
+    } else {
+      showError('HLS playback not supported in this browser');
+    }
+  }
+  
+  // Start
+  openTurnstile();
+})();
+</script>
+</body>
+</html>

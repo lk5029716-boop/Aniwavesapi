@@ -60,18 +60,17 @@ export async function extractDghg(
   const workerBase = (proxyUrl || DGHG_PROXY_WORKER).replace(/\/$/, "");
 
   // Return the proxy info for client-side Turnstile solving
-  // The client will open the worker URL in their browser, solve Turnstile,
-  // and poll for the result
   const proxyPageUrl = `${workerBase}/?id=${encodeURIComponent(videoId)}&host=${encodeURIComponent(host)}`;
   const resultEndpoint = `${workerBase}/__dghg_result?id=${encodeURIComponent(videoId)}`;
+  const playerUrl = `/api/player/dghg?id=${encodeURIComponent(videoId)}&host=${encodeURIComponent(host)}`;
 
   logger.info({ proxyPageUrl: proxyPageUrl.slice(0, 120) }, "[DGHG] returning proxy URL for client-side Turnstile solving");
 
   // Return a special object that the route handler will recognize
-  // and return to the client as a DGHG proxy response
   return {
     _dghgProxy: {
       url: proxyPageUrl,
+      player_url: playerUrl,
       id: videoId,
       host,
       resultEndpoint,

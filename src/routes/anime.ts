@@ -332,6 +332,186 @@ router.get("/dghg/passmd5", async (req, res): Promise<void> => {
 });
 
 /**
+ * GET /api/player/dghg?id=videoId&host=host
+ * Returns an HTML page with HLS player that handles the full DGHG Turnstile flow:
+ * 1. Opens a popup/iframe with the Cloudflare Worker proxy page
+ * 2. User solves Turnstile (residential IP = easy/no challenge)
+ * 3. Injected JS captures pass_md5 → stores in Worker
+ * 4. Page polls Worker for result
+ * 5. Fetches CDN URL and constructs m3u8
+ * 6. Plays stream directly in the HLS player
+ */
+router.get("/player/dghg", (req, res): void => {
+  const videoId = req.query["id"] as string | undefined;
+  const host = req.query["host"] as string || "myvidplay.com";
+
+  if (!videoId) {
+    res.status(400).json({ error: "Missing query param: id" });
+    return;
+  }
+
+  // Serve the player HTML with the video params injected
+  const playerHtml = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stream Player</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"><\/script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#000;color:#fff;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center}
+#player-container{width:100%;max-width:900px;margin:20px}
+video{width:100%;display:block;background:#000;min-height:400px;border-radius:8px}
+#overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:10}
+#overlay.hidden{display:none}
+.box{background:#111;border:1px solid #222;border-radius:12px;padding:32px;text-align:center;max-width:420px}
+.box .icon{font-size:48px;margin-bottom:16px}
+.box .msg{font-size:18px;margin-bottom:8px}
+.box .sub{font-size:14px;color:#666}
+.box .err{color:#ff4444;font-size:14px;margin-top:12px}
+#retry-btn{background:#00d4ff;color:#000;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;margin-top:16px}
+#retry-btn:hover{background:#00b8e6}
+</style>
+</head>
+<body>
+<div id="player-container">
+  <div id="overlay">
+    <div class="box">
+      <div class="icon" id="icon">🔐</div>
+      <div class="msg" id="msg">Loading stream...</div>
+      <div class="sub" id="sub">Preparing Turnstile verification</div>
+      <div class="err" id="err"></div>
+      <button id="retry-btn" onclick="location.reload()" style="display:none">Retry</button>
+    </div>
+  </div>
+  <video id="video" controls playsinline style="display:none;border-radius:8px;overflow:hidden"></video>
+</div>
+<script>
+(function(){
+  const videoId = '${videoId}';
+  const host = '${host}';
+  const WORKER = 'https://dghg-proxy.${process.env.CF_ACCOUNT_DOMAIN || 'lk5029716.workers.dev'}';
+  const PROXY_URL = WORKER + '/?id=' + encodeURIComponent(videoId) + '&host=' + encodeURIComponent(host);
+  const RESULT_URL = WORKER + '/__dghg_result?id=' + encodeURIComponent(videoId);
+
+  function setUI(icon, msg, sub, err, showRetry){
+    document.getElementById('icon').textContent = icon;
+    document.getElementById('msg').textContent = msg;
+    document.getElementById('sub').textContent = sub || '';
+    document.getElementById('err').textContent = err || '';
+    document.getElementById('retry-btn').style.display = showRetry ? 'inline-block' : 'none';
+  }
+
+  function hideOverlay(){ document.getElementById('overlay').classList.add('hidden'); }
+  function showVideo(){ document.getElementById('video').style.display='block'; }
+
+  async function getCDN(passMd5Url, token){
+    setUI('📡','Fetching CDN URL...','This should take a second');
+    try {
+      const r = await fetch('https://' + host + '/' + passMd5Url, {
+        headers:{'Referer':'https://' + host + '/e/' + videoId}
+      });
+      const url = (await r.text()).trim();
+      if(!url.startsWith('http')) throw new Error('Invalid CDN response');
+      return url;
+    } catch(e){
+      throw new Error('CDN fetch failed: ' + e.message);
+    }
+  }
+
+  function buildM3u8(cdnUrl, token){
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let s = '';
+    for(let i=0;i<10;i++) s += chars.charAt(Math.floor(Math.random()*chars.length));
+    return cdnUrl + s + '?token=' + token + '&expiry=' + Date.now();
+  }
+
+  function playM3u8(url){
+    const video = document.getElementById('video');
+    if(Hls.isSupported()){
+      const hls = new Hls({enableWorker:true,lowLatencyMode:true});
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, ()=>{
+        hideOverlay(); showVideo();
+        video.play().catch(()=>{});
+      });
+      hls.on(Hls.Events.ERROR, (e,d)=>{
+        if(d.fatal){ hideOverlay(); setUI('❌','Playback error','Failed to load video stream',d.type,true); }
+      });
+    } else if(video.canPlayType('application/vnd.apple.mpegurl')){
+      video.src = url;
+      video.addEventListener('loadedmetadata', ()=>{ hideOverlay(); showVideo(); video.play().catch(()=>{}); });
+    } else {
+      setUI('❌','Browser not supported','Your browser cannot play HLS streams', '', true);
+    }
+  }
+
+  // Start flow
+  setUI('🔐','Solving Turnstile...','A new window opened — complete the challenge there');
+
+  // Open popup for Turnstile
+  const popup = window.open(PROXY_URL,'dghg_popup','width=520,height=580,left='+((screen.width-520)/2)+',top='+((screen.height-580)/2));
+
+  if(!popup){
+    // Popup blocked — use redirect approach
+    setUI('🔐','Please solve the Click below to continue','');
+    const btn = document.createElement('button');
+    btn.id='retry-btn';
+    btn.textContent='Open Turnstile Page';
+    btn.style.display='inline-block';
+    btn.onclick = ()=>{
+      window.open(PROXY_URL,'dghg_popup','width=520,height=580');
+      btn.style.display='none';
+      startPoll();
+    };
+    document.querySelector('.box').appendChild(btn);
+    return; // wait for user click
+  }
+
+  startPoll();
+
+  let polls = 0;
+  function startPoll(){
+    setUI('⏳','Waiting for Turnstile...','Solve the challenge in the popup window');
+    const iv = setInterval(async()=>{
+      polls++;
+      if(polls > 180){ // 3 min
+        clearInterval(iv);
+        setUI('⏰','Timed out','Turnstile was not solved in time','',true);
+        return;
+      }
+      try{
+        const r = await fetch(RESULT_URL);
+        const d = await r.json();
+        if(d.status==='done'){
+          clearInterval(iv);
+          const passMd5 = d.passMd5Url;
+          const token = passMd5.split('/').pop();
+          try{
+            const cdn = await getCDN(passMd5, token);
+            const m3u8 = buildM3u8(cdn, token);
+            playM3u8(m3u8);
+          } catch(e){
+            clearInterval(iv);
+            setUI('❌','Failed to get CDN URL',e.message,'',true);
+          }
+        }
+      } catch(e){ /* not ready, keep polling */ }
+    },1000);
+  }
+})();
+<\/script>
+</body>
+</html>`;
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(playerHtml);
+});
+
+/**
  * GET /api/proxy?url=https://...&referer=https://...
  */
 router.get("/proxy", async (req, res): Promise<void> => {
