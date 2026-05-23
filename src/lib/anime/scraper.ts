@@ -287,7 +287,10 @@ export async function getEpisodes(animeId: string): Promise<Episode[]> {
     const isFiller = $el.hasClass("filler");
 
     if (dataIds && num > 0) {
-      episodes.push({ number: num, id: dataIds, title, isFiller });
+      // Build a composite episode ID that carries the anime slug
+      // Format: "animeId-ep-N" (e.g. "naruto-76396-ep-1")
+      const compositeId = `${animeId}-ep-${num}`;
+      episodes.push({ number: num, id: compositeId, title, isFiller });
     }
   });
 
@@ -321,7 +324,36 @@ export async function getServers(
     return [];
   }
 
-  const [animeNumId, epsNum] = episode.id.split("&eps=");
+  // Parse the raw dataIds from the episode's internal data
+  // We need the original dataIds format for the aniwaves API
+  // Re-fetch the HTML to get the raw data-ids attribute
+  const numericId = await getNumericId(animeId);
+  if (!numericId) {
+    logger.warn({ animeId }, "could not resolve numeric ID for servers");
+    return [];
+  }
+
+  const epResp = await ajaxClient.get(`/ajax/episode/list/${numericId}`, {
+    headers: { Referer: `${BASE_URL}/watch/${animeId}` },
+  });
+  const epData = epResp.data as { status: number; result?: string };
+  const $ep = cheerio.load(epData.result ?? "");
+  let rawDataIds = "";
+  $ep("a[data-ids][data-num]").each((_, el) => {
+    const $el = $(el);
+    const num = parseInt($el.attr("data-num") ?? "0", 10);
+    if (num === ep) {
+      rawDataIds = $el.attr("data-ids") ?? "";
+      return false;
+    }
+  });
+
+  if (!rawDataIds) {
+    logger.warn({ animeId, ep }, "could not find raw data-ids for episode");
+    return [];
+  }
+
+  const [animeNumId, epsNum] = rawDataIds.split("&eps=");
   const resp = await ajaxClient.get("/ajax/server/list", {
     params: { servers: animeNumId, eps: epsNum },
     headers: { Referer: `${BASE_URL}/watch/${animeId}` },

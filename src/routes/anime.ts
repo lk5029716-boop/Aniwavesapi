@@ -55,10 +55,15 @@ router.get("/episodes", async (req, res): Promise<void> => {
 });
 
 /**
- * GET /api/servers?id=naruto-76396&ep=1&type=sub
+ * GET /api/servers?episodeId=naruto-76396-ep-1&type=sub
+ *   OR /api/servers?id=naruto-76396&ep=1&type=sub (legacy)
+ * episodeId format: "{animeSlug}-ep-{number}" — carries the anime ID inside
  */
 router.get("/servers", async (req, res): Promise<void> => {
-  const id = Array.isArray(req.query["id"])
+  const episodeIdRaw = Array.isArray(req.query["episodeId"])
+    ? req.query["episodeId"][0]
+    : req.query["episodeId"];
+  const idRaw = Array.isArray(req.query["id"])
     ? req.query["id"][0]
     : req.query["id"];
   const epRaw = Array.isArray(req.query["ep"])
@@ -68,31 +73,49 @@ router.get("/servers", async (req, res): Promise<void> => {
     ? req.query["type"][0]
     : req.query["type"];
 
-  if (!id || typeof id !== "string") {
-    res.status(400).json({ error: "Missing query param: id" });
+  let animeId: string;
+  let ep: number;
+
+  // New format: episodeId = "naruto-76396-ep-1"
+  if (episodeIdRaw && typeof episodeIdRaw === "string") {
+    const match = episodeIdRaw.match(/^(.+)-ep-(\d+)$/);
+    if (!match) {
+      res.status(400).json({ error: "Invalid episodeId format. Expected: animeSlug-ep-N (e.g. naruto-76396-ep-1)" });
+      return;
+    }
+    animeId = match[1];
+    ep = parseInt(match[2], 10);
+  }
+  // Legacy format: id + ep
+  else if (idRaw && typeof idRaw === "string" && epRaw) {
+    animeId = idRaw;
+    ep = parseInt(String(epRaw), 10);
+    if (isNaN(ep)) {
+      res.status(400).json({ error: "param ep must be a number" });
+      return;
+    }
+  }
+  else {
+    res.status(400).json({ error: "Provide either episodeId (e.g. naruto-76396-ep-1) or id + ep" });
     return;
   }
-  if (!epRaw) {
-    res.status(400).json({ error: "Missing query param: ep" });
-    return;
-  }
-  const ep = parseInt(String(epRaw), 10);
-  if (isNaN(ep)) {
-    res.status(400).json({ error: "param ep must be a number" });
-    return;
-  }
+
   const type: "sub" | "dub" | "raw" =
     typeRaw === "dub" ? "dub" : typeRaw === "raw" ? "raw" : "sub";
-  const servers = await getServers(id, ep, type);
+  const servers = await getServers(animeId, ep, type);
   res.json({ servers });
 });
 
 /**
- * GET /api/stream?id=naruto-76396&ep=1&type=sub&server=vidplay&proxy=https://worker-url
- * proxy: optional proxy URL passed to provider extractors for all HTTP requests
+ * GET /api/stream?episodeId=naruto-76396-ep-1&type=sub&server=vidplay
+ *   OR /api/stream?id=naruto-76396&ep=1&type=sub&server=vidplay (legacy)
+ * episodeId format: "{animeSlug}-ep-{number}" — carries the anime ID inside
  */
 router.get("/stream", async (req, res): Promise<void> => {
-  const id = Array.isArray(req.query["id"])
+  const episodeIdRaw = Array.isArray(req.query["episodeId"])
+    ? req.query["episodeId"][0]
+    : req.query["episodeId"];
+  const idRaw = Array.isArray(req.query["id"])
     ? req.query["id"][0]
     : req.query["id"];
   const epRaw = Array.isArray(req.query["ep"])
@@ -108,17 +131,30 @@ router.get("/stream", async (req, res): Promise<void> => {
     ? req.query["proxy"][0]
     : req.query["proxy"];
 
-  if (!id || typeof id !== "string") {
-    res.status(400).json({ error: "Missing query param: id" });
-    return;
+  let animeId: string;
+  let ep: number;
+
+  // New format: episodeId = "naruto-76396-ep-1"
+  if (episodeIdRaw && typeof episodeIdRaw === "string") {
+    const match = episodeIdRaw.match(/^(.+)-ep-(\d+)$/);
+    if (!match) {
+      res.status(400).json({ error: "Invalid episodeId format. Expected: animeSlug-ep-N (e.g. naruto-76396-ep-1)" });
+      return;
+    }
+    animeId = match[1];
+    ep = parseInt(match[2], 10);
   }
-  if (!epRaw) {
-    res.status(400).json({ error: "Missing query param: ep" });
-    return;
+  // Legacy format: id + ep
+  else if (idRaw && typeof idRaw === "string" && epRaw) {
+    animeId = idRaw;
+    ep = parseInt(String(epRaw), 10);
+    if (isNaN(ep)) {
+      res.status(400).json({ error: "param ep must be a number" });
+      return;
+    }
   }
-  const ep = parseInt(String(epRaw), 10);
-  if (isNaN(ep)) {
-    res.status(400).json({ error: "param ep must be a number" });
+  else {
+    res.status(400).json({ error: "Provide either episodeId (e.g. naruto-76396-ep-1) or id + ep" });
     return;
   }
 
@@ -127,10 +163,10 @@ router.get("/stream", async (req, res): Promise<void> => {
   const serverName = typeof serverParam === "string" ? serverParam : null;
   const proxyUrl = typeof proxyParam === "string" ? proxyParam : null;
 
-  req.log.info({ id, ep, type, server: serverName, proxy: proxyUrl != null }, "stream requested");
+  req.log.info({ animeId, ep, type, server: serverName, proxy: proxyUrl != null }, "stream requested");
 
   // 1. Get server list
-  const servers = await getServers(id, ep, type);
+  const servers = await getServers(animeId, ep, type);
   if (servers.length === 0) {
     res.status(404).json({ error: "No servers found for this episode/type" });
     return;
@@ -152,7 +188,7 @@ router.get("/stream", async (req, res): Promise<void> => {
       return;
     }
 
-    const sourcesResult = await getEmbedUrl(targetServer.id, id);
+    const sourcesResult = await getEmbedUrl(targetServer.id, animeId);
     if (!sourcesResult?.url) {
       res.status(502).json({ error: `Could not resolve embed URL for server "${serverName}"` });
       return;
@@ -166,7 +202,7 @@ router.get("/stream", async (req, res): Promise<void> => {
     // DGHG proxy response — return client-side Turnstile solving info
     if (stream && '_dghgProxy' in stream) {
       const proxyInfo = (stream as Record<string, unknown>)._dghgProxy as {
-        url: string; id: string; host: string; resultEndpoint: string;
+        url: string; id: string; host: string; resultEndpoint: string; player_url?: string;
       };
       req.log.info({ serverName: targetServer.name, proxyUrl: proxyInfo.url.slice(0, 80) }, "DGHG proxy URL returned for client-side Turnstile solving");
       res.json({
@@ -222,7 +258,7 @@ router.get("/stream", async (req, res): Promise<void> => {
       "trying server"
     );
 
-    const sourcesResult = await getEmbedUrl(server.id, id);
+    const sourcesResult = await getEmbedUrl(server.id, animeId);
     if (!sourcesResult?.url) {
       req.log.warn({ serverName: server.name }, "could not resolve embed URL — skipping");
       failedServers.push(server.name);
@@ -237,7 +273,7 @@ router.get("/stream", async (req, res): Promise<void> => {
     // DGHG proxy response — return client-side Turnstile solving info
     if (stream && '_dghgProxy' in stream) {
       const proxyInfo = (stream as Record<string, unknown>)._dghgProxy as {
-        url: string; id: string; host: string; resultEndpoint: string;
+        url: string; id: string; host: string; resultEndpoint: string; player_url?: string;
       };
       req.log.info({ serverName: server.name, proxyUrl: proxyInfo.url.slice(0, 80) }, "DGHG proxy URL returned for client-side Turnstile solving");
       res.json({

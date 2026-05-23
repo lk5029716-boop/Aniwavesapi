@@ -298,8 +298,16 @@ function fetchEp(path, params, prefix){
 function doSearch(){fetchEp('/api/search',{q:$('s_q').value.trim()},'s')}
 function doDetails(){fetchEp('/api/details',{id:$('d_id').value.trim()},'d')}
 function doEpisodes(){fetchEp('/api/episodes',{id:$('e_id').value.trim()},'e')}
-function doServers(){fetchEp('/api/servers',{id:$('sr_id').value.trim(),ep:$('sr_ep').value,type:$('sr_type').value},'sr')}
-function doStream(){fetchEp('/api/stream',{id:$('st_id').value.trim(),ep:$('st_ep').value,type:$('st_type').value,server:$('st_srv').value},'st')}
+function doServers(){
+  var id=$('sr_id').value.trim(),ep=$('sr_ep').value,type=$('sr_type').value;
+  if(id&&ep){fetchEp('/api/servers',{episodeId:id+'-ep-'+ep,type:type},'sr')}
+  else{fetchEp('/api/servers',{id:id,ep:ep,type:type},'sr')}
+}
+function doStream(){
+  var id=$('st_id').value.trim(),ep=$('st_ep').value,type=$('st_type').value,s=$('st_srv').value;
+  var p={episodeId:id+'-ep-'+ep,type:type};if(s)p.server=s;
+  fetchEp('/api/stream',p,'st');
+}
 
 /* Player */
 function setOverlay(icon,msg,sub,err){
@@ -340,7 +348,7 @@ function doPlay(){
   if(!id){setOverlay('❌','Enter an anime ID');return}
   if(pollIv)clearInterval(pollIv);
   setOverlay('⏳','Loading...','Fetching stream URL');
-  var p=new URLSearchParams({id:id,ep:ep,type:type});if(s)p.set('server',s);
+  var p=new URLSearchParams({episodeId:id+'-ep-'+ep,type:type});if(s)p.set('server',s);
   fetch(BASE+'/api/stream?'+p).then(function(r){return r.json()}).then(function(d){
     if(d.m3u8){showVideo(d._server||'Unknown');playHLS(d.m3u8)}
     else if(d.type==='dghg_proxy'){doDGHG(d)}
