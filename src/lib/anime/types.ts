@@ -27,7 +27,8 @@ export interface AnimeDetails {
 
 export interface Episode {
   number: number;
-  id: string;
+  id: string;       // Composite ID: "animeSlug-ep-N" (e.g. "naruto-76396-ep-1")
+  rawId: string;    // Original data-ids from aniwaves: "76396&eps=1"
   title: string | null;
   isFiller: boolean;
 }

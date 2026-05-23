@@ -290,7 +290,7 @@ export async function getEpisodes(animeId: string): Promise<Episode[]> {
       // Build a composite episode ID that carries the anime slug
       // Format: "animeId-ep-N" (e.g. "naruto-76396-ep-1")
       const compositeId = `${animeId}-ep-${num}`;
-      episodes.push({ number: num, id: compositeId, title, isFiller });
+      episodes.push({ number: num, id: compositeId, rawId: dataIds, title, isFiller });
     }
   });
 
@@ -324,36 +324,19 @@ export async function getServers(
     return [];
   }
 
-  // Parse the raw dataIds from the episode's internal data
-  // We need the original dataIds format for the aniwaves API
-  // Re-fetch the HTML to get the raw data-ids attribute
-  const numericId = await getNumericId(animeId);
-  if (!numericId) {
-    logger.warn({ animeId }, "could not resolve numeric ID for servers");
+  // Use the raw data-ids stored alongside the composite episode ID
+  // rawId format: "76396&eps=1" (needed by aniwaves server list API)
+  if (!episode.rawId) {
+    logger.warn({ animeId, ep }, "episode has no rawId");
     return [];
   }
 
-  const epResp = await ajaxClient.get(`/ajax/episode/list/${numericId}`, {
-    headers: { Referer: `${BASE_URL}/watch/${animeId}` },
-  });
-  const epData = epResp.data as { status: number; result?: string };
-  const $ep = cheerio.load(epData.result ?? "");
-  let rawDataIds = "";
-  $ep("a[data-ids][data-num]").each((_, el) => {
-    const $el = $(el);
-    const num = parseInt($el.attr("data-num") ?? "0", 10);
-    if (num === ep) {
-      rawDataIds = $el.attr("data-ids") ?? "";
-      return false;
-    }
-  });
-
-  if (!rawDataIds) {
-    logger.warn({ animeId, ep }, "could not find raw data-ids for episode");
+  const [animeNumId, epsNum] = episode.rawId.split("&eps=");
+  if (!animeNumId || !epsNum) {
+    logger.warn({ animeId, ep, rawId: episode.rawId }, "could not parse rawId");
     return [];
   }
 
-  const [animeNumId, epsNum] = rawDataIds.split("&eps=");
   const resp = await ajaxClient.get("/ajax/server/list", {
     params: { servers: animeNumId, eps: epsNum },
     headers: { Referer: `${BASE_URL}/watch/${animeId}` },
