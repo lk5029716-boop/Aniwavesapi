@@ -599,7 +599,23 @@ router.get("/debug/dghg-bypass", async (req, res): Promise<void> => {
       log("clicked play");
     }
 
-    // Wait 15s
+    // INTERCEPT: Fake the Turnstile validation response
+    // The page calls /dood?op=validate&gc_response=TOKEN
+    // We intercept this and return a fake success response
+    // Then the page will reload and show pass_md5
+    await page.route("**/dood?op=validate*", async (route) => {
+      log("INTERCEPTED /dood?op=validate — returning fake success");
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ status: "ok", message: "validated" }),
+      });
+    });
+
+    // Also intercept the reload — instead of reloading, inject pass_md5 directly
+    // Actually, let the page reload and check the new HTML
+    
+    // Wait 15s for Turnstile + reload
     for (let i = 0; i < 15; i++) {
       await page.waitForTimeout(1000);
       html = await page.content();
@@ -608,6 +624,11 @@ router.get("/debug/dghg-bypass", async (req, res): Promise<void> => {
         passMd5Path = m[1];
         log(`pass_md5 found at ${i+1}s: ${passMd5Path}`);
         break;
+      }
+      // Check if URL changed (reload happened)
+      const currentUrl = page.url();
+      if (currentUrl !== embedUrl) {
+        log(`URL changed to: ${currentUrl}`);
       }
     }
 
