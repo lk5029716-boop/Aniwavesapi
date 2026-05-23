@@ -163,6 +163,24 @@ router.get("/stream", async (req, res): Promise<void> => {
       outro: sourcesResult.skip_data?.outro,
     }, proxyUrl);
 
+    // DGHG proxy response — return client-side Turnstile solving info
+    if (stream && '_dghgProxy' in stream) {
+      const proxyInfo = (stream as Record<string, unknown>)._dghgProxy as {
+        url: string; id: string; host: string; resultEndpoint: string;
+      };
+      req.log.info({ serverName: targetServer.name, proxyUrl: proxyInfo.url.slice(0, 80) }, "DGHG proxy URL returned for client-side Turnstile solving");
+      res.json({
+        type: "dghg_proxy",
+        proxy_url: proxyInfo.url,
+        video_id: proxyInfo.id,
+        host: proxyInfo.host,
+        result_endpoint: proxyInfo.resultEndpoint,
+        _server: targetServer.name,
+        _skip: stream?.intro || stream?.outro ? { intro: stream?.intro, outro: stream?.outro } : undefined,
+      });
+      return;
+    }
+
     if (stream?.m3u8) {
       req.log.info({ serverName: targetServer.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
       res.json({ ...stream, _server: targetServer.name });
@@ -215,6 +233,24 @@ router.get("/stream", async (req, res): Promise<void> => {
       outro: sourcesResult.skip_data?.outro,
     }, proxyUrl);
 
+    // DGHG proxy response — return client-side Turnstile solving info
+    if (stream && '_dghgProxy' in stream) {
+      const proxyInfo = (stream as Record<string, unknown>)._dghgProxy as {
+        url: string; id: string; host: string; resultEndpoint: string;
+      };
+      req.log.info({ serverName: server.name, proxyUrl: proxyInfo.url.slice(0, 80) }, "DGHG proxy URL returned for client-side Turnstile solving");
+      res.json({
+        type: "dghg_proxy",
+        proxy_url: proxyInfo.url,
+        video_id: proxyInfo.id,
+        host: proxyInfo.host,
+        result_endpoint: proxyInfo.resultEndpoint,
+        _server: server.name,
+        _failedServers: failedServers,
+      });
+      return;
+    }
+
     if (stream?.m3u8) {
       req.log.info({ serverName: server.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
       res.json({ ...stream, _server: server.name, _failedServers: failedServers });
@@ -232,6 +268,67 @@ router.get("/stream", async (req, res): Promise<void> => {
     error: "All servers failed — check logs for stage-by-stage detail",
     failedServers,
   });
+});
+
+/**
+ * GET /api/dghg/poll?id=videoId&worker=https://...
+ * Poll the Cloudflare Worker for the pass_md5 result.
+ * Client calls this after opening the proxy URL to check if Turnstile has been solved.
+ */
+router.get("/dghg/poll", async (req, res): Promise<void> => {
+  const videoId = req.query["id"] as string | undefined;
+  const workerUrl = req.query["worker"] as string | undefined;
+
+  if (!videoId || !workerUrl) {
+    res.status(400).json({ error: "Missing id or worker parameter" });
+    return;
+  }
+
+  try {
+    const result = await axios.get(`${workerUrl}/__dghg_result?id=${encodeURIComponent(videoId)}`, {
+      timeout: 5000,
+    });
+    res.json(result.data);
+  } catch (err) {
+    res.status(502).json({ error: "Poll failed", reason: (err as Error).message });
+  }
+});
+
+/**
+ * GET /api/dghg/passmd5?url=https://playmogo.com/pass_md5/xxx&referer=https://...
+ * Proxy the pass_md5 call (which requires the right Referer/Cookie).
+ * Client calls this to get the CDN base URL from the pass_md5 endpoint.
+ */
+router.get("/dghg/passmd5", async (req, res): Promise<void> => {
+  const passMd5Url = req.query["url"] as string | undefined;
+  const referer = req.query["referer"] as string || "https://playmogo.com/";
+
+  if (!passMd5Url) {
+    res.status(400).json({ error: "Missing url parameter" });
+    return;
+  }
+
+  try {
+    const result = await axios.get(passMd5Url, {
+      timeout: 10000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Accept: "*/*",
+        Referer: referer,
+      },
+      maxRedirects: 5,
+    });
+
+    const cdnUrl = typeof result.data === "string" ? result.data.trim() : result.data;
+    res.json({ cdn_url: cdnUrl });
+  } catch (err) {
+    const e = err as Error & { response?: { status: number; data?: string } };
+    res.status(502).json({
+      error: "pass_md5 call failed",
+      reason: e.message,
+      upstream_status: e.response?.status,
+    });
+  }
 });
 
 /**
@@ -599,22 +696,16 @@ router.get("/debug/dghg-bypass", async (req, res): Promise<void> => {
       log("clicked play");
     }
 
-    // INTERCEPT: Fake the Turnstile validation response
-    // The page calls /dood?op=validate&gc_response=TOKEN
-    // We intercept this and return a fake success response
-    // Then the page will reload and show pass_md5
+    // INTERCEPT: Fake the Turnstile validation
     await page.route("**/dood?op=validate*", async (route) => {
       log("INTERCEPTED /dood?op=validate — returning fake success");
       await route.fulfill({
         status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "ok", message: "validated" }),
+        contentType: "text/plain",
+        body: "ok",
       });
     });
 
-    // Also intercept the reload — instead of reloading, inject pass_md5 directly
-    // Actually, let the page reload and check the new HTML
-    
     // Wait 15s for Turnstile + reload
     for (let i = 0; i < 15; i++) {
       await page.waitForTimeout(1000);
@@ -624,11 +715,6 @@ router.get("/debug/dghg-bypass", async (req, res): Promise<void> => {
         passMd5Path = m[1];
         log(`pass_md5 found at ${i+1}s: ${passMd5Path}`);
         break;
-      }
-      // Check if URL changed (reload happened)
-      const currentUrl = page.url();
-      if (currentUrl !== embedUrl) {
-        log(`URL changed to: ${currentUrl}`);
       }
     }
 
