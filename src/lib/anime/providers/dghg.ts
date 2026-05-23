@@ -1,25 +1,17 @@
 /**
- * DGHG / PlayMogo / DoodStream provider extractor.
+ * DGHG / PlayMogo / DoodStream provider extractor v3.
  *
- * Flow discovered from page reverse engineering:
+ * Uses Playwright with enhanced stealth to solve Cloudflare Turnstile,
+ * then extracts pass_md5 from the post-reload HTML.
  *
- * 1. Page loads with Cloudflare Turnstile gate
- * 2. Click play button (.captcha_l) → renders Turnstile widget
- * 3. Turnstile solved → callback fires: GET /dood?op=validate&gc_response=...
- * 4. /dood validates and sets session → location.reload()
- * 5. After reload, page serves actual video HTML with pass_md5 path
- * 6. Extract pass_md5, call it → get CDN base URL
- * 7. Construct final URL: {cdnUrl}{random10chars}?token={token}&expiry={timestamp}
- *
- * This approach: use Playwright to simulate click+wait for Turnstile,
- * intercept the page reload, then extract pass_md5 from the post-reload HTML.
+ * Key insight: the headless Chromium on Render CAN solve Cloudflare's
+ * managed challenge (we see it in the debug endpoint), but Turnstile
+ * requires additional checks. We add fingerprint randomization and
+ * longer wait times.
  */
 import axios from "axios";
 import { logger } from "../../logger.js";
 import type { StreamSource, SkipTime } from "../types.js";
-
-const UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const DOOD_HOSTS = [
   "playmogo.com", "myvidplay.com", "doodstream.com", "dood.la",
@@ -42,13 +34,29 @@ export async function extractDghg(
 ): Promise<StreamSource | null> {
   const urlObj = new URL(embedUrl);
   let host = urlObj.hostname;
+  const videoId = urlObj.pathname.split("/").pop() || "";
 
-  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction");
+  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] starting extraction v3");
 
   let browser: import("playwright").Browser | null = null;
 
   try {
-    const { chromium } = await import("playwright");
+    const pw = await import("playwright");
+    const chromium = pw.chromium;
+
+    // Generate a realistic fingerprint
+    const screens = [
+      { w: 1920, h: 1080 },
+      { w: 1366, h: 768 },
+      { w: 1536, h: 864 },
+    ];
+    const screen = screens[Math.floor(Math.random() * screens.length)];
+    const UAs = [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    ];
+    const UA = UAs[Math.floor(Math.random() * UAs.length)];
 
     browser = await chromium.launch({
       headless: true,
@@ -64,165 +72,209 @@ export async function extractDghg(
         "--disable-blink-features=AutomationControlled",
         "--autoplay-policy=no-user-gesture-required",
         "--allow-running-insecure-content",
+        `--window-size=${screen.w},${screen.h}`,
       ],
     });
 
     const context = await browser.newContext({
       userAgent: UA,
+      viewport: { width: screen.w, height: screen.h },
       javaScriptEnabled: true,
       ignoreHTTPSErrors: true,
       extraHTTPHeaders: {
         Referer: "https://aniwaves.ru/",
       },
+      locale: "en-US",
+      timezoneId: "America/New_York",
     });
 
+    // Enhanced stealth
     await context.addInitScript(() => {
       Object.defineProperty(navigator, "webdriver", { get: () => false });
-      Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3] });
+      Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
       Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+      Object.defineProperty(navigator, "platform", { get: () => "Win32" });
+      Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 8 });
       // @ts-ignore
-      window.chrome = { runtime: {} };
+      window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {} };
+      // Override the debugger detection
+      const originalQuery = window.navigator.permissions?.query;
+      if (originalQuery) {
+        // @ts-ignore
+        window.navigator.permissions.query = (parameters) =>
+          parameters.name === "notifications"
+            ? Promise.resolve({ state: Notification.permission })
+            : originalQuery(parameters);
+      }
     });
 
     const page = await context.newPage();
 
-    // Step 1: Load the embed page
-    logger.info("[DGHG] loading embed page");
-    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch((e: Error) => {
-      logger.warn({ error: e.message }, "[DGHG] goto error");
+    // Block unnecessary resources to speed up loading
+    await page.route("**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,ico}", (route) => route.abort());
+    await page.route("**/beacon/**", (route) => route.abort());
+    await page.route("**/analytics/**", (route) => route.abort());
+
+    // Step 1: Navigate to embed page
+    logger.info("[DGHG] navigating to embed page");
+    const response = await page.goto(embedUrl, {
+      waitUntil: "networkidle",
+      timeout: 60000,
+    }).catch(async () => {
+      // If networkidle times out, try domcontentloaded
+      return page.goto(embedUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 30000,
+      }).catch(() => null);
     });
 
-    // Wait for Turnstile JS to load
-    await page.waitForTimeout(3000);
+    logger.info({ status: response?.status(), url: page.url() }, "[DGHG] page loaded");
 
-    // Check if we got redirected (myvidplay → playmogo)
+    // Check for redirect
     const currentUrl = page.url();
     if (currentUrl !== embedUrl) {
-      logger.info({ currentUrl: currentUrl.slice(0, 80) }, "[DGHG] redirected");
       host = new URL(currentUrl).hostname;
     }
 
-    // Step 2: Click the play button to trigger Turnstile
-    logger.info("[DGHG] clicking play button to trigger Turnstile");
-    let clicked = false;
-    try {
-      await page.click(".captcha_l", { timeout: 5000 });
-      clicked = true;
-    } catch {
-      try {
-        await page.click(".vjs-big-play-button", { timeout: 5000 });
-        clicked = true;
-      } catch {
-        try {
-          await page.click("#video_player", { timeout: 5000 });
-          clicked = true;
-        } catch {
-          await page.keyboard.press("Enter").catch(() => {});
+    // Wait for Turnstile to load
+    await page.waitForTimeout(2000);
+
+    // Step 2: Click the play button
+    logger.info("[DGHG] clicking play button");
+    const playClicked = await page.evaluate(() => {
+      // Try multiple selectors
+      const selectors = [".captcha_l", ".vjs-big-play-button", "#video_player button", "button.vjs-big-play-button"];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel) as HTMLElement;
+        if (el) {
+          el.click();
+          return sel;
         }
       }
-    }
+      // Try clicking the video player area
+      const vp = document.getElementById("video_player");
+      if (vp) {
+        vp.click();
+        return "#video_player";
+      }
+      return null;
+    });
 
-    if (!clicked) {
-      logger.warn("[DGHG] could not click play button, waiting anyway");
-    }
+    logger.info({ playClicked }, "[DGHG] play button click result");
 
-    // Step 3: Wait for Turnstile to solve + page to reload with video content
-    // The flow: click → Turnstile → /dood?op=validate → location.reload()
-    // After reload, the page should have pass_md5 in HTML
-    logger.info("[DGHG] waiting for Turnstile solve + page reload (up to 45s)");
+    // Step 3: Wait for Turnstile to solve and page to reload with video content
+    logger.info("[DGHG] waiting for Turnstile solve + reload (up to 60s)");
 
-    // Wait for the URL to change (redirect after Turnstile) or for pass_m5 to appear
     const startTime = Date.now();
-    const TIMEOUT = 45000;
+    const TIMEOUT = 60000;
     let passMd5Path: string | null = null;
+    let lastHtmlLen = 0;
 
     while (Date.now() - startTime < TIMEOUT) {
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(3000);
+      const elapsed = Date.now() - startTime;
 
-      // Check current page HTML for pass_md5
       const html = await page.content().catch(() => "");
+      const currentUrl = page.url();
+      const htmlLen = html.length;
+
+      // Log progress every 10s
+      if (elapsed % 10000 < 3000 && htmlLen !== lastHtmlLen) {
+        logger.debug({ elapsed: Math.round(elapsed/1000), htmlLen, url: currentUrl.slice(0,60) }, "[DGHG] waiting...");
+        lastHtmlLen = htmlLen;
+      }
+
+      // Check 1: pass_md5 found in HTML
       const m = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
       if (m) {
         passMd5Path = m[1];
-        logger.info({ passMd5Path }, "[DGHG] found pass_md5 after Turnstile!");
+        logger.info({ passMd5Path, elapsed: Math.round(elapsed/1000) }, "[DGHG] ✓ found pass_md5!");
         break;
       }
 
-      // Check if page is still showing Turnstile
-      const pageUrl = page.url();
-      const hasTurnstile = html.includes("turnstile") || html.includes("cf-challenge");
-
-      if (!hasTurnstile && html.length > 6500) {
-        // Page loaded beyond the Turnstile gate (>6103 bytes), might have video content
-        // Look for any reference to pass_md5 or video
-        const altMatch = html.match(/pass_md5\/([^'"\s,)]+)/);
-        if (altMatch) {
+      // Check 2: page grew significantly beyond Turnstile gate (6103 bytes)
+      if (htmlLen > 7000) {
+        const altMatch = html.match(/pass_md5\/([^'"\s,)\]]+)/);
+        if (altMatch && !altMatch[0].includes("function")) {
           passMd5Path = altMatch[1];
-          logger.info({ passMd5Path }, "[DGHG] found pass_md5 (alt pattern)");
+          logger.info({ passMd5Path, htmlLen, elapsed: Math.round(elapsed/1000) }, "[DGHG] ✓ found pass_md5 (alt)!");
           break;
         }
       }
 
-      // Check elapsed
-      const elapsed = Date.now() - startTime;
-      if (elapsed > 20000 && !passMd5Path) {
-        // After 20s, try pressing play again in case the first click didn't register
-        try {
-          await page.click(".captcha_l", { timeout: 2000 });
-        } catch { /* ignore */ }
+      // Check 3: URL changed (page reload after Turnstile)
+      if (videoId && !currentUrl.includes(videoId)) {
+        logger.info({ currentUrl: currentUrl.slice(0,60) }, "[DGHG] URL changed (redirect?), checking HTML");
       }
     }
 
     if (!passMd5Path) {
-      const pageTitle = await page.title().catch(() => "unknown");
       const html = await page.content().catch(() => "");
+      const pageTitle = await page.title().catch(() => "unknown");
       logger.error(
         { embedUrl: embedUrl.slice(0, 90), pageTitle, htmlLen: html.length },
-        "[DGHG] Turnstile did not solve or pass_md5 not found"
+        "[DGHG] ✗ Turnstile not solved or pass_md5 not found after 60s"
       );
       return null;
     }
 
-    // Step 4: Extract token from pass_md5 path
+    // Step 4: Extract token and call pass_md5
     const pathParts = passMd5Path.split("/");
     const token = pathParts[pathParts.length - 1];
     if (!token) {
-      logger.error("[DGHG] could not extract token from pass_md5 path");
+      logger.error("[DGHG] could not extract token");
       return null;
     }
 
     logger.info({ token: token.slice(0, 20) }, "[DGHG] extracted token");
 
-    // Step 5: Call pass_md5 endpoint to get CDN base URL
     const passMd5Url = `https://${host}/pass_md5/${passMd5Path}`;
-    logger.info({ url: passMd5Url.slice(0, 80) }, "[DGHG] calling pass_md5 endpoint");
+    logger.info({ url: passMd5Url.slice(0, 80) }, "[DGHG] calling pass_md5");
 
     let cdnBaseUrl: string;
     try {
+      // Use the browser context cookies for the pass_md5 call
+      const cookies = await context.cookies();
+      const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join("; ");
+
       const resp = await axios.get(passMd5Url, {
         timeout: 15000,
         headers: {
           "User-Agent": UA,
           Accept: "*/*",
-          Referer: `https://${host}/e/` + urlObj.pathname.split("/").pop(),
+          Referer: `https://${host}/e/${videoId}`,
+          Cookie: cookieStr,
         },
         maxRedirects: 5,
       });
       cdnBaseUrl = (resp.data as string).trim();
     } catch (err) {
       const e = err as Error & { response?: { status: number } };
-      logger.error({ error: e.message, status: e.response?.status }, "[DGHG] pass_md5 request failed");
-      return null;
+      logger.error({ error: e.message, status: e.response?.status }, "[DGHG] pass_md5 call failed");
+
+      // Try without cookies
+      try {
+        const resp = await axios.get(passMd5Url, {
+          timeout: 15000,
+          headers: {
+            "User-Agent": UA,
+            Accept: "*/*",
+            Referer: `https://${host}/e/${videoId}`,
+          },
+          maxRedirects: 5,
+        });
+        cdnBaseUrl = (resp.data as string).trim();
+      } catch {
+        return null;
+      }
     }
 
     if (!cdnBaseUrl || !cdnBaseUrl.startsWith("http")) {
-      logger.error({ cdnBase: cdnBaseUrl?.slice(0, 200) }, "[DGHG] invalid CDN URL from pass_md5");
+      logger.error({ cdnBase: cdnBaseUrl?.slice(0, 200) }, "[DGHG] invalid CDN URL");
       return null;
     }
 
-    logger.info({ cdnBase: cdnBaseUrl.slice(0, 100) }, "[DGHG] got CDN base URL");
-
-    // Step 6: Construct final URL
+    // Step 5: Construct final URL
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let randomSuffix = "";
     for (let i = 0; i < 10; i++) {
@@ -231,7 +283,7 @@ export async function extractDghg(
     const expiry = Date.now();
     const finalUrl = `${cdnBaseUrl}${randomSuffix}?token=${token}&expiry=${expiry}`;
 
-    logger.info({ finalUrl: finalUrl.slice(0, 120) }, "[DGHG] extraction SUCCESS");
+    logger.info({ finalUrl: finalUrl.slice(0, 120) }, "[DGHG] ✓ extraction SUCCESS");
 
     let intro: SkipTime | null = null;
     let outro: SkipTime | null = null;
