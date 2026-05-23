@@ -64,7 +64,8 @@ function extractKeyFromScript(scriptContent: string): string | null {
 }
 
 export async function extractMegacloud(
-  embedUrl: string
+  embedUrl: string,
+  proxyUrl?: string | null
 ): Promise<StreamSource | null> {
   const urlObj = new URL(embedUrl);
   const host = urlObj.hostname;
@@ -78,7 +79,7 @@ export async function extractMegacloud(
     return null;
   }
 
-  logger.info({ embedUrl, host, sourceId }, "[MegaCloud Stage 1] fetching embed page");
+  logger.info({ embedUrl, host, sourceId, proxy: proxyUrl != null }, "[MegaCloud Stage 1] fetching embed page");
 
   let embedHtml = "";
   let scriptKey: string | null = null;

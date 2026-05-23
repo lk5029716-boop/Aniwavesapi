@@ -88,7 +88,8 @@ router.get("/servers", async (req, res): Promise<void> => {
 });
 
 /**
- * GET /api/stream?id=naruto-76396&ep=1&type=sub&server=vidplay
+ * GET /api/stream?id=naruto-76396&ep=1&type=sub&server=vidplay&proxy=https://worker-url
+ * proxy: optional proxy URL passed to provider extractors for all HTTP requests
  */
 router.get("/stream", async (req, res): Promise<void> => {
   const id = Array.isArray(req.query["id"])
@@ -103,6 +104,9 @@ router.get("/stream", async (req, res): Promise<void> => {
   const serverParam = Array.isArray(req.query["server"])
     ? req.query["server"][0]
     : req.query["server"];
+  const proxyParam = Array.isArray(req.query["proxy"])
+    ? req.query["proxy"][0]
+    : req.query["proxy"];
 
   if (!id || typeof id !== "string") {
     res.status(400).json({ error: "Missing query param: id" });
@@ -121,8 +125,9 @@ router.get("/stream", async (req, res): Promise<void> => {
   const type: "sub" | "dub" | "raw" =
     typeRaw === "dub" ? "dub" : typeRaw === "raw" ? "raw" : "sub";
   const serverName = typeof serverParam === "string" ? serverParam : null;
+  const proxyUrl = typeof proxyParam === "string" ? proxyParam : null;
 
-  req.log.info({ id, ep, type, server: serverName }, "stream requested");
+  req.log.info({ id, ep, type, server: serverName, proxy: proxyUrl != null }, "stream requested");
 
   // 1. Get server list
   const servers = await getServers(id, ep, type);
@@ -156,7 +161,7 @@ router.get("/stream", async (req, res): Promise<void> => {
     const stream = await extractStream(sourcesResult.url, targetServer.name, {
       intro: sourcesResult.skip_data?.intro,
       outro: sourcesResult.skip_data?.outro,
-    });
+    }, proxyUrl);
 
     if (stream?.m3u8) {
       req.log.info({ serverName: targetServer.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
@@ -175,10 +180,24 @@ router.get("/stream", async (req, res): Promise<void> => {
     return;
   }
 
-  // 3. No specific server — try all in order until one succeeds
+  // 3. No specific server — try working servers first, deprioritize DGHG
+  //    DGHG/myvidplay/playmogo/doodstream use Cloudflare Turnstile which
+  //    requires Playwright + headless Chromium (~60s timeout each). They almost
+  //    never succeed on Render and just waste time. Push them to the end.
+  const DEPRIORITIZED = ["dghg", "myvidplay", "playmogo", "doodstream", "dood"];
+  const sortedServers = [...servers].sort((a, b) => {
+    const aLow = a.name.toLowerCase();
+    const bLow = b.name.toLowerCase();
+    const aDep = DEPRIORITIZED.some((d) => aLow.includes(d));
+    const bDep = DEPRIORITIZED.some((d) => bLow.includes(d));
+    if (aDep && !bDep) return 1;   // a goes after b
+    if (!aDep && bDep) return -1;  // a goes before b
+    return 0;                       // keep original order
+  });
+
   const failedServers: string[] = [];
 
-  for (const server of servers) {
+  for (const server of sortedServers) {
     req.log.info(
       { serverName: server.name, linkId: server.id.slice(0, 30) },
       "trying server"
@@ -194,7 +213,7 @@ router.get("/stream", async (req, res): Promise<void> => {
     const stream = await extractStream(sourcesResult.url, server.name, {
       intro: sourcesResult.skip_data?.intro,
       outro: sourcesResult.skip_data?.outro,
-    });
+    }, proxyUrl);
 
     if (stream?.m3u8) {
       req.log.info({ serverName: server.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
@@ -481,6 +500,138 @@ router.get("/debug/dghg-full", async (req, res): Promise<void> => {
       hasPassMd5: html.includes("pass_md5"),
       logs,
       allRequests: allRequests.map(r => `${r.method} ${r.url}`).slice(0, 50),
+    });
+  } catch (err) {
+    log(`ERROR: ${(err as Error).message}`);
+    res.status(500).json({ error: (err as Error).message, logs });
+  }
+});
+
+// DGHG Turnstile bypass attempt — intercept pass_md5 token from page JS
+router.get("/debug/dghg-bypass", async (req, res): Promise<void> => {
+  const linkId = req.query["linkId"] as string | undefined;
+  if (!linkId) { res.status(400).json({ error: "Missing linkId" }); return; }
+
+  const logs: string[] = [];
+  const log = (msg: string) => logs.push(`[${new Date().toISOString()}] ${msg}`);
+
+  try {
+    const { getEmbedUrl } = await import("../lib/anime/scraper.js");
+    const sourcesResult = await getEmbedUrl(linkId);
+    if (!sourcesResult?.url) { res.status(502).json({ error: "no embed URL", logs }); return; }
+
+    const embedUrl = sourcesResult.url;
+    log(`embedUrl: ${embedUrl}`);
+
+    const urlObj = new URL(embedUrl);
+    const videoId = urlObj.pathname.split("/").pop() || "";
+    const host = urlObj.hostname;
+    log(`videoId: ${videoId}, host: ${host}`);
+
+    const pw = await import("playwright");
+    const browser = await pw.chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    });
+    const context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      extraHTTPHeaders: { Referer: "https://aniwaves.ru/" },
+    });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => false });
+      // @ts-ignore
+      window.chrome = { runtime: {} };
+    });
+    const page = await context.newPage();
+
+    // Intercept pass_md5 responses
+    let cdnBaseUrl: string | null = null;
+    let passMd5Path: string | null = null;
+
+    page.on("response", async (response) => {
+      const url = response.url();
+      if (url.includes("/pass_md5/")) {
+        try {
+          const text = await response.text();
+          cdnBaseUrl = text.trim();
+          const m = url.match(/\/pass_md5\/(.+)/);
+          if (m) passMd5Path = m[1];
+          log(`PASS_MD5: path=${passMd5Path}, cdn=${cdnBaseUrl.slice(0,100)}`);
+        } catch (e) { /* ignore */ }
+      }
+    });
+
+    // Navigate
+    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+    let html = await page.content();
+
+    // Check initial HTML for pass_md5
+    const initialMatch = html.match(/pass_md5\/([^'"\s,\]]+)/);
+    if (initialMatch) log(`pass_md5 in initial HTML: ${initialMatch[1]}`);
+
+    // Extract ALL JS from page to find token generation logic
+    const jsCode = await page.evaluate(() => {
+      const scripts = document.querySelectorAll("script");
+      let allJS = "";
+      for (const s of scripts) {
+        allJS += (s.textContent || "") + "\n---\n";
+      }
+      return allJS;
+    });
+    log(`Total JS length: ${jsCode.length}`);
+
+    // Look for token/key/secret in JS
+    const tokenMatches = jsCode.match(/(?:token|key|secret|pass_md5|rand_str|expiry)["'\s:=]+["']?([a-zA-Z0-9_-]{10,})["']?/gi);
+    if (tokenMatches) log(`Token patterns: ${tokenMatches.slice(0,5).join(" | ")}`);
+
+    // Look for the captcha_l click handler — it contains the Turnstile callback
+    const captchaHandler = jsCode.match(/\.captcha_l[\s\S]{0,500}/);
+    if (captchaHandler) log(`Captcha handler: ${captchaHandler[0].slice(0, 300)}`);
+
+    // Try to find the /dood endpoint call pattern
+    const doodPattern = jsCode.match(/\/dood[^\s"'`]+/g);
+    if (doodPattern) log(`Dood endpoints: ${doodPattern.join(", ")}`);
+
+    // Try clicking play
+    const playBtn = await page.$(".captcha_l") || await page.$("#video_player");
+    if (playBtn) {
+      await playBtn.click();
+      log("clicked play");
+    }
+
+    // Wait 15s
+    for (let i = 0; i < 15; i++) {
+      await page.waitForTimeout(1000);
+      html = await page.content();
+      const m = html.match(/pass_md5\/([^'"\s,\]]+)/);
+      if (m) {
+        passMd5Path = m[1];
+        log(`pass_md5 found at ${i+1}s: ${passMd5Path}`);
+        break;
+      }
+    }
+
+    // If we got pass_md5, call it
+    if (passMd5Path && !cdnBaseUrl) {
+      const passMd5Url = `https://${host}/pass_md5/${passMd5Path}`;
+      log(`Calling pass_md5: ${passMd5Url}`);
+      const passResp = await page.evaluate(async (url: string) => {
+        const r = await fetch(url);
+        return r.text();
+      }, passMd5Url);
+      cdnBaseUrl = passResp.trim();
+      log(`CDN base: ${cdnBaseUrl.slice(0, 100)}`);
+    }
+
+    await browser.close();
+    res.json({
+      logs,
+      videoId,
+      host,
+      embedUrl,
+      passMd5Path,
+      cdnBaseUrl,
+      success: !!(passMd5Path && cdnBaseUrl),
     });
   } catch (err) {
     log(`ERROR: ${(err as Error).message}`);

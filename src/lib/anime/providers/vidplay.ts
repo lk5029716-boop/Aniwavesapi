@@ -82,12 +82,13 @@ function aesDecrypt(ciphertext: string, key: string): string {
 }
 
 export async function extractVidplay(
-  embedUrl: string
+  embedUrl: string,
+  proxyUrl?: string | null
 ): Promise<StreamSource | null> {
   const urlObj = new URL(embedUrl);
   const host = urlObj.hostname;
 
-  logger.info({ embedUrl, host }, "[Stage 1] fetching embed page");
+  logger.info({ embedUrl, host, proxy: proxyUrl != null }, "[Stage 1] fetching embed page");
 
   let embedHtml: string;
   try {

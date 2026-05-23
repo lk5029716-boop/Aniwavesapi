@@ -69,7 +69,8 @@ const KNOWN_KEYS_HEX: string[] = [];
 
 export async function extractWeneverbeenfree(
   embedUrl: string,
-  skipData?: { intro?: [number, number]; outro?: [number, number] }
+  skipData?: { intro?: [number, number]; outro?: [number, number] },
+  proxyUrl?: string | null
 ): Promise<StreamSource | null> {
   const urlObj = new URL(embedUrl);
   const host = urlObj.hostname;
@@ -81,7 +82,7 @@ export async function extractWeneverbeenfree(
   }
 
   logger.info(
-    { embedUrl: embedUrl.slice(0, 80), host, videoId },
+    { embedUrl: embedUrl.slice(0, 80), host, videoId, proxy: proxyUrl != null },
     "[WNBF S1] starting weneverbeenfree extraction"
   );
 

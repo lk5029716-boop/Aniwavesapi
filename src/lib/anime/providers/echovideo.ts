@@ -31,7 +31,8 @@ interface EchovideoSourcesResponse {
 
 export async function extractEchovideo(
   embedUrl: string,
-  skipData?: { intro?: [number, number]; outro?: [number, number] }
+  skipData?: { intro?: [number, number]; outro?: [number, number] },
+  proxyUrl?: string | null
 ): Promise<StreamSource | null> {
   const urlObj = new URL(embedUrl);
   const host = urlObj.hostname;
@@ -48,7 +49,7 @@ export async function extractEchovideo(
   }
 
   logger.info(
-    { embedUrl: embedUrl.slice(0, 80), host, embedPrefix, sourceId: sourceId.slice(0, 30) },
+    { embedUrl: embedUrl.slice(0, 80), host, embedPrefix, sourceId: sourceId.slice(0, 30), proxy: proxyUrl != null },
     "[Echovideo S1] fetching embed page"
   );
 
