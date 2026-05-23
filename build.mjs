@@ -15,5 +15,6 @@ await esbuild.build({
 const publicDir = path.join("dist", "public");
 fs.mkdirSync(publicDir, { recursive: true });
 fs.copyFileSync("frontend/index.html", path.join(publicDir, "index.html"));
+fs.copyFileSync("frontend/hls.min.js", path.join(publicDir, "hls.min.js"));
 
 console.log("Build complete");

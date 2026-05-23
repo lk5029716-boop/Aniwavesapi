@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Aniwaves API</title>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;min-height:100vh;padding:20px}
@@ -18,279 +17,200 @@ input,select{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:
 input:focus,select:focus{outline:none;border-color:#00d4ff}
 button{background:#00d4ff;color:#000;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;margin-top:16px}
 button:hover{background:#00b8e6}
-button:disabled{background:#333;color:#666;cursor:not-allowed}
 .result{background:#0d0d0d;border:1px solid #222;border-radius:6px;padding:16px;margin-top:16px;font-family:'Courier New',monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:500px;overflow:auto;line-height:1.5}
 .result:empty{display:none}
-.ok{color:#00ff88}.err{color:#ff4444}.info{color:#ffaa00}
+.ok{color:#00ff88}.err{color:#ff4444}
 .url-display{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:8px 12px;font-family:monospace;font-size:12px;color:#888;margin-top:8px;word-break:break-all}
-#pOverlay{position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:5;border-radius:8px}
+#pOverlay{position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.9);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:5;border-radius:8px}
 #pOverlay.hidden{display:none}
-#pOverlay .icon{font-size:48px;margin-bottom:12px}
-#pOverlay .msg{font-size:16px;margin-bottom:6px}
-#pOverlay .sub{font-size:13px;color:#666;text-align:center;padding:0 20px;line-height:1.5}
-#pOverlay .err{color:#ff4444;font-size:13px;margin-top:10px;text-align:center;padding:0 20px}
-#pOverlay button{margin-top:14px}
-#pInfo{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1a1a1a;border-radius:6px;margin-top:8px;font-size:13px}
-#pInfo .tag{display:inline-block;padding:2px 10px;border-radius:4px;font-size:11px;font-weight:600;margin-left:8px}
-#pInfo .tag.vidplay{background:#00d4ff22;color:#00d4ff}
-#pInfo .tag.dghg{background:#ff880022;color:#ffaa00}
-.dghg-note{background:#ff880011;border:1px solid #ff880033;border-radius:6px;padding:10px 14px;margin-top:12px;font-size:13px;color:#ffaa00;line-height:1.5}
+#pOverlay .pIcon{font-size:48px;margin-bottom:12px}
+#pOverlay .pMsg{font-size:16px;margin-bottom:6px;text-align:center}
+#pOverlay .pSub{font-size:13px;color:#666;text-align:center;padding:0 20px;line-height:1.5}
+#pOverlay .pErr{color:#ff4444;font-size:13px;margin-top:10px;text-align:center;padding:0 20px;line-height:1.5}
+#pBar{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1a1a1a;border-radius:6px;margin-top:8px;font-size:13px}
+#pBar .tag{display:inline-block;padding:2px 10px;border-radius:4px;font-size:11px;font-weight:600;margin-left:8px}
+#pBar .tag.vp{background:#00d4ff;color:#000}
+#pBar .tag.dg{background:#ff8800;color:#000}
+.dg-note{display:none;background:#ff880015;border:1px solid #ff880044;border-radius:6px;padding:10px 14px;margin-top:12px;font-size:13px;color:#ffaa00;line-height:1.5}
 </style>
 </head>
 <body>
 
 <h1>🎬 Aniwaves API</h1>
-<p class="subtitle">Test all endpoints — <span class="ok">● Server Online</span></p>
+<p class="subtitle">Test all endpoints — <span style="color:#00ff88">● Online</span></p>
 
 <div class="section">
-<h2><span class="method">GET</span> Search Anime</h2>
-<label>Search Query *</label>
-<input id="search-q" placeholder="e.g. naruto, one piece" value="naruto">
-<div class="url-display" id="search-url"></div>
-<button onclick="doSearch()">Search</button>
-<div class="result" id="search-result"></div>
+<h2><span class="method">GET</span> /api/search</h2>
+<label>Query</label>
+<input id="sq" placeholder="naruto, one piece" value="naruto">
+<div class="url-display" id="su"></div>
+<button onclick="ds()">Search</button>
+<div class="result" id="sr"></div>
 </div>
 
 <div class="section">
-<h2><span class="method">GET</span> Anime Details</h2>
-<label>Anime ID *</label>
-<input id="details-id" placeholder="e.g. naruto-76396" value="naruto-76396">
-<div class="url-display" id="details-url"></div>
-<button onclick="doDetails()">Get Details</button>
-<div class="result" id="details-result"></div>
+<h2><span class="method">GET</span> /api/details</h2>
+<label>Anime ID</label>
+<input id="did" placeholder="naruto-76396" value="naruto-76396">
+<div class="url-display" id="du"></div>
+<button onclick="dd()">Get Details</button>
+<div class="result" id="dr"></div>
 </div>
 
 <div class="section">
-<h2><span class="method">GET</span> Episodes</h2>
-<label>Anime ID *</label>
-<input id="episodes-id" placeholder="e.g. naruto-76396" value="naruto-76396">
-<div class="url-display" id="episodes-url"></div>
-<button onclick="doEpisodes()">Get Episodes</button>
-<div class="result" id="episodes-result"></div>
+<h2><span class="method">GET</span> /api/episodes</h2>
+<label>Anime ID</label>
+<input id="eid" placeholder="naruto-76396" value="naruto-76396">
+<div class="url-display" id="eu"></div>
+<button onclick="de()">Get Episodes</button>
+<div class="result" id="er"></div>
 </div>
 
 <div class="section">
-<h2><span class="method">GET</span> Servers</h2>
-<label>Anime ID *</label>
-<input id="servers-id" placeholder="e.g. naruto-76396" value="naruto-76396">
-<label>Episode Number *</label>
-<input id="servers-ep" type="number" placeholder="e.g. 1" value="1">
+<h2><span class="method">GET</span> /api/servers</h2>
+<label>Anime ID</label>
+<input id="sid" placeholder="naruto-76396" value="naruto-76396">
+<label>Episode</label>
+<input id="sep" type="number" value="1">
 <label>Type</label>
-<select id="servers-type"><option value="sub">sub</option><option value="dub">dub</option><option value="raw">raw</option></select>
-<div class="url-display" id="servers-url"></div>
-<button onclick="doServers()">Get Servers</button>
-<div class="result" id="servers-result"></div>
+<select id="stype"><option value="sub">sub</option><option value="dub">dub</option></select>
+<div class="url-display" id="ssu"></div>
+<button onclick="dss()">Get Servers</button>
+<div class="result" id="ssr"></div>
 </div>
 
 <div class="section">
-<h2><span class="method">GET</span> Stream URL</h2>
-<label>Anime ID *</label>
-<input id="stream-id" placeholder="e.g. naruto-76396" value="naruto-76396">
-<label>Episode Number *</label>
-<input id="stream-ep" type="number" placeholder="e.g. 1" value="1">
+<h2><span class="method">GET</span> /api/stream</h2>
+<label>Anime ID</label>
+<input id="stid" placeholder="naruto-76396" value="naruto-76396">
+<label>Episode</label>
+<input id="step" type="number" value="1">
 <label>Type</label>
-<select id="stream-type"><option value="sub">sub</option><option value="dub">dub</option></select>
-<label>Server (leave empty for auto)</label>
-<select id="stream-server"><option value="">Auto</option><option value="vidplay">Vidplay</option><option value="byfms">BYFMS</option><option value="dghg">DGHG</option></select>
-<div class="url-display" id="stream-url"></div>
-<button onclick="doStream()">Get Stream</button>
-<div class="result" id="stream-result"></div>
+<select id="sttype"><option value="sub">sub</option><option value="dub">dub</option></select>
+<label>Server</label>
+<select id="stserver"><option value="">Auto</option><option value="vidplay">Vidplay</option><option value="byfms">BYFMS</option><option value="dghg">DGHG</option></select>
+<div class="url-display" id="stu"></div>
+<button onclick="dst()">Get Stream</button>
+<div class="result" id="str"></div>
 </div>
 
 <div class="section">
 <h2>🎬 Video Player</h2>
-<label>Anime ID *</label>
-<input id="playId" placeholder="e.g. naruto-76396" value="naruto-76396">
-<label>Episode Number *</label>
-<input id="playEp" type="number" placeholder="e.g. 1" value="1">
+<label>Anime ID</label>
+<input id="vid" placeholder="naruto-76396" value="naruto-76396">
+<label>Episode</label>
+<input id="vep" type="number" value="1">
 <label>Type</label>
-<select id="playType"><option value="sub">sub</option><option value="dub">dub</option></select>
+<select id="vtype"><option value="sub">sub</option><option value="dub">dub</option></select>
 <label>Server</label>
-<select id="playServer" onchange="document.getElementById('dghgNote').style.display=this.value==='dghg'?'block':'none'"><option value="">Auto</option><option value="vidplay">Vidplay</option><option value="byfms">BYFMS</option><option value="dghg">DGHG</option></select>
+<select id="vserver" onchange="document.getElementById('dgNote').style.display=this.value==='dghg'?'block':'none'"><option value="">Auto</option><option value="vidplay">Vidplay</option><option value="byfms">BYFMS</option><option value="dghg">DGHG</option></select>
 <br>
-<button onclick="playVideo()">▶ Play</button>
-<div class="dghg-note" id="dghgNote" style="display:none">⚠️ <strong>DGHG:</strong> A popup will open for Cloudflare Turnstile. Complete the challenge and the stream starts automatically.</div>
-<div style="position:relative;background:#000;border-radius:8px;overflow:hidden;margin-top:16px;aspect-ratio:16/9;max-height:600px">
+<button onclick="vp()">▶ Play</button>
+<div class="dg-note" id="dgNote">⚠️ DGHG: A popup opens for Cloudflare Turnstile. Solve it and the stream auto-plays.</div>
+<div style="position:relative;background:#000;border-radius:8px;overflow:hidden;margin-top:16px;aspect-ratio:16/9">
   <div id="pOverlay">
-    <div style="font-size:48px;margin-bottom:12px" id="pIcon">▶️</div>
-    <div style="font-size:16px;margin-bottom:6px" id="pMsg">Enter details above and click Play</div>
-    <div style="font-size:13px;color:#666;text-align:center;padding:0 20px" id="pSub">Supports Vidplay, BYFMS, and DGHG</div>
-    <div style="color:#ff4444;font-size:13px;margin-top:10px;text-align:center;padding:0 20px" id="pErr"></div>
-    <button id="pBtn" style="display:none"></button>
+    <div class="pIcon" id="pIc">▶️</div>
+    <div class="pMsg" id="pM">Enter details above and click Play</div>
+    <div class="pSub" id="pS">Vidplay, BYFMS play instantly. DGHG needs Turnstile.</div>
+    <div class="pErr" id="pE"></div>
+    <button id="pB" style="display:none">Retry</button>
   </div>
-  <video id="video" controls playsinline style="width:100%;height:100%;display:none;border-radius:8px"></video>
+  <video id="vv" controls playsinline style="width:100%;height:100%;display:none;background:#000"></video>
 </div>
-<div id="pInfo" style="display:none">
-  <span id="pInfoLeft"></span>
-  <span id="pInfoRight"></span>
+<div id="pBar" style="display:none">
+  <span id="pBL"></span>
+  <span id="pBR"></span>
 </div>
 </div>
 
-<script type="text/javascript">
-var BASE = 'https://aniwavesapis.onrender.com';
-var WORKER = 'https://dghg-proxy.lk5029716.workers.dev';
-var hls = null;
-var pollInterval = null;
+<script src="/hls.min.js"></script>
+<script>
+var API='https://aniwavesapis.onrender.com',WORKER='https://dghg-proxy.lk5029716.workers.dev';
+var pollIv=null;
 
-function showUrl(id,url){document.getElementById(id).textContent=url}
-function showResult(id,data,isErr){
-  var el=document.getElementById(id);
-  el.textContent=typeof data==='string'?data:JSON.stringify(data,null,2);
-  el.className='result '+(isErr?'err':'ok');
-}
-function fetchAPI(url,resultId){
-  showResult(resultId,'Loading...',false);
+function gu(p){var q=new URLSearchParams(),k;for(k in p){if(p[k])q.set(k,p[k]);}return API+'?'+q.toString();}
+function sr(id,d){document.getElementById(id).textContent=d;}
+function sh(id,url){document.getElementById(id).textContent=url;}
+function rf(url,rid,bg){
+  document.getElementById(rid).textContent='Loading...';
+  document.getElementById(rid).className='result';
   fetch(url).then(function(r){return r.text()}).then(function(t){
-    var d;try{d=JSON.parse(t)}catch(e){d=t}
-    showResult(resultId,d,!r.ok);
-  }).catch(function(e){showResult(resultId,'Error: '+e.message,true)});
+    var d;try{d=JSON.parse(t)}catch(e){d=t;}
+    document.getElementById(rid).textContent=JSON.stringify(d,null,2);
+    document.getElementById(rid).className='result '+(bg?'err':'ok');
+  }).catch(function(e){document.getElementById(rid).textContent='Error: '+e.message;document.getElementById(rid).className='result err';});
 }
-function buildUrl(path,params){
-  var p=new URLSearchParams();
-  for(var k in params){if(params[k])p.set(k,params[k]);}
-  var q=p.toString();return BASE+path+(q?'?'+q:'');
-}
-function doSearch(){
-  var q=document.getElementById('search-q').value;
-  var url=buildUrl('/api/search',{q:q});
-  showUrl('search-url',url);fetchAPI(url,'search-result');
-}
-function doDetails(){
-  var id=document.getElementById('details-id').value;
-  var url=buildUrl('/api/details',{id:id});
-  showUrl('details-url',url);fetchAPI(url,'details-result');
-}
-function doEpisodes(){
-  var id=document.getElementById('episodes-id').value;
-  var url=buildUrl('/api/episodes',{id:id});
-  showUrl('episodes-url',url);fetchAPI(url,'episodes-result');
-}
-function doServers(){
-  var id=document.getElementById('servers-id').value;
-  var ep=document.getElementById('servers-ep').value;
-  var type=document.getElementById('servers-type').value;
-  var url=buildUrl('/api/servers',{id:id,ep:ep,type:type});
-  showUrl('servers-url',url);fetchAPI(url,'servers-result');
-}
-function doStream(){
-  var id=document.getElementById('stream-id').value;
-  var ep=document.getElementById('stream-ep').value;
-  var type=document.getElementById('stream-type').value;
-  var server=document.getElementById('stream-server').value;
-  var params={id:id,ep:ep,type:type};
-  if(server)params.server=server;
-  var url=buildUrl('/api/stream',params);
-  showUrl('stream-url',url);fetchAPI(url,'stream-result');
+function ds(){var q=document.getElementById('sq').value;sh('su',gu({q:q}));rf(gu({q:q}),'sr',false);}
+function dd(){var id=document.getElementById('did').value;sh('du',gu({id:id}));rf(gu({id:id}),'dr',false);}
+function de(){var id=document.getElementById('eid').value;sh('eu',gu({id:id}));rf(gu({id:id}),'er',false);}
+function dss(){var id=document.getElementById('sid').value,ep=document.getElementById('sep').value,t=document.getElementById('stype').value;sh('ssu',gu({id:id,ep:ep,type:t}));rf(gu({id:id,ep:ep,type:t}),'ssr',false);}
+function dst(){var id=document.getElementById('stid').value,ep=document.getElementById('step').value,t=document.getElementById('sttype').value,s=document.getElementById('stserver').value,p={id:id,ep:ep,type:t};if(s)p.server=s;sh('stu',gu(p));rf(gu(p),'str',false);}
+
+function po(ic,m,s,e){document.getElementById('pIc').textContent=ic;document.getElementById('pM').textContent=m;document.getElementById('pS').textContent=s||'';document.getElementById('pE').textContent=e||'';document.getElementById('pOverlay').classList.remove('hidden');document.getElementById('vv').style.display='none';document.getElementById('pBar').style.display='none';document.getElementById('pB').style.display='none';}
+function ps(ic,m,s){po(ic,m,s,'');}
+function pv(sn){document.getElementById('pOverlay').classList.add('hidden');document.getElementById('vv').style.display='block';document.getElementById('pBar').style.display='flex';var t=sn==='DGHG'?'dg':'vp';document.getElementById('pBR').innerHTML='<span class="tag '+t+'">'+sn+'</span>';document.getElementById('pBL').textContent=document.getElementById('vid').value+' — Ep '+document.getElementById('vep').value;}
+function pf(e){po('❌','Failed',e,'');document.getElementById('pB').style.display='inline-block';document.getElementById('pB').textContent='Retry';document.getElementById('pB').onclick=vp;}
+
+function vp(){
+  var id=document.getElementById('vid').value.trim(),ep=document.getElementById('vep').value,type=document.getElementById('vtype').value,s=document.getElementById('vserver').value;
+  if(!id){pf('Enter anime ID');return;}
+  if(pollIv)clearInterval(pollIv);
+  ps('⏳','Loading...','Fetching stream');
+  var p=new URLSearchParams({id:id,ep:ep,type:type});if(s)p.set('server',s);
+  fetch(API+'/api/stream?'+p).then(function(r){return r.json()}).then(function(d){
+    if(d.m3u8){
+      pv(d._server||'Unknown');
+      playHLS(d.m3u8);
+    }else if(d.type==='dghg_proxy'){
+      dg(d);
+    }else if(d.error){
+      pf(d.error);
+    }
+  }).catch(function(e){pf(e.message);});
 }
 
-function setP(icon,msg,sub,err){
-  document.getElementById('pIcon').textContent=icon;
-  document.getElementById('pMsg').textContent=msg;
-  document.getElementById('pSub').textContent=sub||'';
-  document.getElementById('pErr').textContent=err||'';
-  document.getElementById('pOverlay').classList.remove('hidden');
-  document.getElementById('video').style.display='none';
-  document.getElementById('pInfo').style.display='none';
-  document.getElementById('pBtn').style.display='none';
-}
-function showOverlay(icon,msg,sub){
-  document.getElementById('pIcon').textContent=icon;
-  document.getElementById('pMsg').textContent=msg;
-  document.getElementById('pSub').textContent=sub||'';
-  document.getElementById('pErr').textContent='';
-  document.getElementById('pOverlay').classList.remove('hidden');
-  document.getElementById('video').style.display='none';
-  document.getElementById('pBtn').style.display='none';
-}
-function showPlayer(sName){
-  document.getElementById('pOverlay').classList.add('hidden');
-  document.getElementById('video').style.display='block';
-  document.getElementById('pInfo').style.display='flex';
-  var tag=sName==='dghg'?'dghg':'vidplay';
-  document.getElementById('pInfoRight').innerHTML='<span class="tag '+tag+'">'+sName+'</span>';
-}
-function playM3u8(url,sName){
-  var video=document.getElementById('video');
-  showPlayer(sName);
-  document.getElementById('pInfoLeft').textContent=document.getElementById('playId').value+' — Ep '+document.getElementById('playEp').value;
-  if(Hls.isSupported()){
-    hls=new Hls({enableWorker:true,lowLatencyMode:true});
-    hls.loadSource(url);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED,function(){video.play();});
-    hls.on(Hls.Events.ERROR,function(e,d){
-      if(d.fatal){if(hls){hls.destroy();hls=null;}setP('❌','Playback error','Stream failed','Type: '+d.type);}
-    });
-  }else if(video.canPlayType('application/vnd.apple.mpegurl')){
-    video.src=url;
-    video.addEventListener('loadedmetadata',function(){video.play();});
+function playHLS(url){
+  var v=document.getElementById('vv');
+  if(window.Hls&&Hls.isSupported()){
+    var h=new Hls({enableWorker:true});
+    h.loadSource(url);h.attachMedia(v);
+    h.on(Hls.Events.MANIFEST_PARSED,function(){v.play().catch(function(){});});
+    h.on(Hls.Events.ERROR,function(e,d){if(d.fatal){pf('Playback error');h.destroy();}});
+  }else if(v.canPlayType('application/vnd.apple.mpegurl')){
+    v.src=url;v.onloadedmetadata=function(){v.play().catch(function(){});};
   }else{
-    setP('❌','Not supported','Browser cannot play HLS');
+    pf('HLS not supported');
   }
 }
 
-function playVideo(){
-  var id=document.getElementById('playId').value.trim();
-  var ep=document.getElementById('playEp').value;
-  var type=document.getElementById('playType').value;
-  var server=document.getElementById('playServer').value;
-  if(!id){setP('❌','Missing Anime ID','Enter an anime ID');return;}
-  if(hls){hls.destroy();hls=null;}
-  if(pollInterval)clearInterval(pollInterval);
-  setP('⏳','Loading...','Fetching from '+(server||'auto'));
-  var params=new URLSearchParams({id:id,ep:ep,type:type});
-  if(server)params.set('server',server);
-  fetch(BASE+'/api/stream?'+params).then(function(r){return r.json()}).then(function(data){
-    if(data.m3u8){
-      playM3u8(data.m3u8,data._server||'Unknown');
-    }else if(data.type==='dghg_proxy'){
-      solveDghg(data);
-    }else if(data.error){
-      setP('❌','Failed',data.error,'');
-    }
-  }).catch(function(e){setP('❌','Error',e.message,'');});
-}
-
-function solveDghg(data){
-  var videoId=data.video_id;
-  var host=data.host;
-  var proxyUrl=data.proxy_url;
-  var resultUrl=WORKER+'/__dghg_result?id='+encodeURIComponent(videoId);
-  showOverlay('🔐','DGHG Turnstile','Popup opened — solve the challenge');
-  var popup=window.open(proxyUrl,'dghg_popup','width=520,height=580');
-  if(!popup){
-    showOverlay('🔐','Popup blocked','Click below to open Turnstile');
-    document.getElementById('pBtn').textContent='Open Turnstile';
-    document.getElementById('pBtn').style.display='inline-block';
-    document.getElementById('pBtn').onclick=function(){
-      window.open(proxyUrl,'dghg_popup','width=520,height=580');
-      startPoll();
-    };
+function dg(data){
+  var vid=data.videoId,host=data.host,proxyUrl=data.proxyUrl;
+  var resUrl=WORKER+'/__dghg_result?id='+encodeURIComponent(vid);
+  ps('🔐','DGHG Turnstile','Solve the challenge in the popup');
+  var pop=window.open(proxyUrl,'dghg_pop','width=500,height=550');
+  if(!pop){
+    ps('🔐','Popup blocked','Click below');document.getElementById('pB').style.display='inline-block';
+    document.getElementById('pB').textContent='Open Turnstile';
+    document.getElementById('pB').onclick=function(){window.open(proxyUrl,'dghg_pop','width=500,height=550');startPop();};
     return;
   }
-  startPoll();
-  function startPoll(){
-    var polls=0;
-    pollInterval=setInterval(function(){
-      polls++;
-      if(polls>180){clearInterval(pollInterval);setP('⏰','Timed out','Turnstile not solved');return;}
-      fetch(resultUrl).then(function(r){return r.json()}).then(function(d){
+  startPop();
+  function startPop(){
+    var polls=0;pollIv=setInterval(function(){
+      polls++;if(polls>180){clearInterval(pollIv);pf('Timed out');return;}
+      fetch(resUrl).then(function(r){return r.json()}).then(function(d){
         if(d.status==='done'){
-          clearInterval(pollInterval);
-          showOverlay('📡','Getting CDN URL...','Almost there...');
+          clearInterval(pollIv);
+          ps('📡','Getting CDN...','Almost done');
           var token=d.passMd5Url.split('/').pop();
-          fetch(BASE+'/api/dghg/passmd5?url='+encodeURIComponent(d.passMd5Url)+'&referer=https://'+host+'/e/'+videoId)
-            .then(function(r){return r.json()})
-            .then(function(cdnD){
-              if(cdnD.cdn_url){
-                var chars='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-                var s='';
-                for(var i=0;i<10;i++) s+=chars.charAt(Math.floor(Math.random()*chars.length));
-                playM3u8(cdnD.cdn_url+s+'?token='+token+'&expiry='+Date.now(),'DGHG');
-              }else{
-                setP('❌','CDN failed','Could not get URL');
-              }
-            }).catch(function(e){setP('❌','CDN error',e.message,'');});
+          fetch(API+'/api/dghg/passmd5?url='+encodeURIComponent(d.passMd5Url)+'&referer=https://'+host+'/e/'+vid)
+            .then(function(r){return r.json()}).then(function(cd){
+              if(cd.cdn_url){
+                var c='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',s='';
+                for(var i=0;i<10;i++) s+=c.charAt(Math.floor(Math.random()*c.length));
+                pv('DGHG');playHLS(cd.cdn_url+s+'?token='+token+'&expiry='+Date.now());
+              }else pf('CDN failed');
+            }).catch(function(e){pf('CDN error: '+e.message);});
         }
       }).catch(function(){});
     },1000);
