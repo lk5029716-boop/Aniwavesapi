@@ -334,21 +334,26 @@ router.get("/proxy", async (req, res): Promise<void> => {
   }
 });
 
-// Quick Playwright DGHG test
-router.get("/debug/dghg-pw", async (req, res): Promise<void> => {
+// Comprehensive DGHG diagnostic: clicks play, tracks Turnstile, waits for reload
+router.get("/debug/dghg-full", async (req, res): Promise<void> => {
   const linkId = req.query["linkId"] as string | undefined;
   if (!linkId) { res.status(400).json({ error: "Missing linkId" }); return; }
+
+  const logs: string[] = [];
+  const log = (msg: string) => logs.push(`[${new Date().toISOString()}] ${msg}`);
 
   try {
     const { getEmbedUrl } = await import("../lib/anime/scraper.js");
     const sourcesResult = await getEmbedUrl(linkId);
-    if (!sourcesResult?.url) { res.status(502).json({ error: "no embed URL" }); return; }
+    if (!sourcesResult?.url) { res.status(502).json({ error: "no embed URL", logs }); return; }
 
     const embedUrl = sourcesResult.url;
+    log(`embedUrl: ${embedUrl}`);
+
     const { chromium } = await import("playwright");
     const browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"],
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage"],
     });
     const context = await browser.newContext({
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -361,33 +366,125 @@ router.get("/debug/dghg-pw", async (req, res): Promise<void> => {
     });
     const page = await context.newPage();
 
-    // Intercept ALL network requests to see what's happening
-    const allRequests: string[] = [];
+    const allRequests: {method: string, url: string, time: number}[] = [];
     page.on("request", (req) => {
-      allRequests.push(`${req.method()} ${req.url().slice(0, 120)}`);
+      const entry = { method: req.method(), url: req.url().slice(0, 150), time: Date.now() };
+      allRequests.push(entry);
+      if (req.url().includes("/dood") || req.url().includes("turnstile") || req.url().includes(".m3u8") || req.url().includes("pass_md5")) {
+        log(`REQUEST: ${req.method()} ${req.url().slice(0, 120)}`);
+      }
     });
 
-    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
-    await page.waitForTimeout(10000); // Wait 10s for Turnstile to solve
-    const html = await page.content();
+    const allResponses: {status: number, url: string, time: number}[] = [];
+    page.on("response", (resp) => {
+      const entry = { status: resp.status(), url: resp.url().slice(0, 150), time: Date.now() };
+      allResponses.push(entry);
+      if (resp.url().includes("/dood") || resp.url().includes("turnstile")) {
+        log(`RESPONSE: ${resp.status()} ${resp.url().slice(0, 120)}`);
+      }
+    });
 
-    // Check if Turnstile is still showing
-    const hasTurnstile = html.toLowerCase().includes("turnstile") || html.toLowerCase().includes("cf-challenge");
-    const hasVideoPlayer = html.includes("pass_md5") || html.includes("video_player") || html.includes(".m3u8");
+    // Navigate
+    log("navigating to embed page...");
+    const navResp = await page.goto(embedUrl, { waitUntil: "networkidle", timeout: 60000 }).catch(async () => {
+      log("networkidle timeout, trying domcontentloaded...");
+      return page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
+    });
+
+    log(`page loaded: status=${navResp?.status()}, url=${page.url()}, htmlLen=${(await page.content()).length}`);
+
+    // Wait for initial page to settle
+    await page.waitForTimeout(5000);
+    let html = await page.content();
+    const urlAfterLoad = page.url();
+    log(`after 5s wait: url=${urlAfterLoad}, htmlLen=${html.length}`);
+    log(`has Turnstile: ${html.toLowerCase().includes("turnstile")}`);
+    log(`has pass_md5: ${html.includes("pass_md5")}`);
+    log(`has /dood endpoint call: ${allRequests.some(r => r.url.includes("/dood"))}`);
+
+    // Click play button
+    log("clicking play button...");
+    const clickResult = await page.evaluate(() => {
+      const selectors = [".captcha_l", ".vjs-big-play-button", "button.vjs-big-play-button"];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel) as HTMLElement;
+        if (el) { el.click(); return `clicked: ${sel}`; }
+      }
+      const vp = document.getElementById("video_player") as HTMLElement;
+      if (vp) { vp.click(); return "clicked: #video_player"; }
+      return "no play button found";
+    });
+    log(`click result: ${clickResult}`);
+
+    // Wait for Turnstile to solve and page to reload
+    log("waiting 45s for Turnstile solve + reload...");
+    const waitStart = Date.now();
+    let passMd5Found: string | null = null;
+    let foundAt = 0;
+    let reloadCount = 0;
+    let lastUrl = page.url();
+
+    while (Date.now() - waitStart < 45000) {
+      await page.waitForTimeout(2000);
+      html = await page.content().catch(() => "");
+      const currentUrl = page.url();
+
+      if (currentUrl !== lastUrl) {
+        reloadCount++;
+        log(`URL CHANGED (#${reloadCount}): ${currentUrl}`);
+        lastUrl = currentUrl;
+      }
+
+      const m = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
+      if (m) {
+        passMd5Found = m[1];
+        foundAt = Date.now() - waitStart;
+        log(`✓ pass_md5 FOUND after ${Math.round(foundAt/1000)}s: ${passMd5Found}`);
+        break;
+      }
+
+      // Alt check
+      if (html.length > 7000) {
+        const alt = html.match(/pass_md5\/([^'"\s,\]]+)/);
+        if (alt && !alt[0].includes("function")) {
+          passMd5Found = alt[1];
+          foundAt = Date.now() - waitStart;
+          log(`✓ pass_md5 FOUND (alt) after ${Math.round(foundAt/1000)}s: ${passMd5Found}`);
+          break;
+        }
+      }
+    }
+
+    const totalTime = Date.now() - waitStart;
+
+    // Gather final state
+    html = await page.content();
+    const finalUrl = page.url();
+    const doodRequests = allRequests.filter(r => r.url.includes("/dood"));
+    const turnstileRequests = allRequests.filter(r => r.url.includes("turnstile"));
 
     await browser.close();
 
     res.json({
       embedUrl,
+      finalUrl,
       htmlLen: html.length,
-      hasTurnstile,
-      hasVideoPlayer,
-      passMd5: (html.match(/pass_md5\/([^'"\s,)]+)/) ?? [])[1] ?? null,
-      allRequests: allRequests.slice(0, 30),
-      htmlFull: html,
+      passMd5: passMd5Found,
+      foundAt: foundAt ? `${foundAt}ms` : null,
+      totalWait: `${totalTime}ms`,
+      reloadCount,
+      doodRequestCount: doodRequests.length,
+      doodRequests: doodRequests.map(r => `${r.method} ${r.url}`),
+      turnstileRequestCount: turnstileRequests.length,
+      clickedPlay: clickResult,
+      hasTurnstileInHtml: html.toLowerCase().includes("turnstile"),
+      hasPassMd5: html.includes("pass_md5"),
+      logs,
+      allRequests: allRequests.map(r => `${r.method} ${r.url}`).slice(0, 50),
     });
   } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
+    log(`ERROR: ${(err as Error).message}`);
+    res.status(500).json({ error: (err as Error).message, logs });
   }
 });
 
