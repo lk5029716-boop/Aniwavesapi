@@ -107,11 +107,16 @@ router.get("/servers", async (req, res): Promise<void> => {
 });
 
 /**
- * GET /api/stream?episodeId=naruto-76396-ep-1&type=sub&server=vidplay
+ * GET /api/stream?serverId=<server_id_from_servers_output>
+ *   OR /api/stream?episodeId=naruto-76396-ep-1&type=sub&server=vidplay
  *   OR /api/stream?id=naruto-76396&ep=1&type=sub&server=vidplay (legacy)
+ * serverId: the `id` field from /api/servers output — everything is encoded inside
  * episodeId format: "{animeSlug}-ep-{number}" — carries the anime ID inside
  */
 router.get("/stream", async (req, res): Promise<void> => {
+  const serverIdRaw = Array.isArray(req.query["serverId"])
+    ? req.query["serverId"][0]
+    : req.query["serverId"];
   const episodeIdRaw = Array.isArray(req.query["episodeId"])
     ? req.query["episodeId"][0]
     : req.query["episodeId"];
@@ -131,10 +136,55 @@ router.get("/stream", async (req, res): Promise<void> => {
     ? req.query["proxy"][0]
     : req.query["proxy"];
 
+  const type: "sub" | "dub" | "raw" =
+    typeRaw === "dub" ? "dub" : typeRaw === "raw" ? "raw" : "sub";
+  const proxyUrl = typeof proxyParam === "string" ? proxyParam : null;
+
+  // ── FAST PATH: serverId from /api/servers output ──────────────────────────
+  // The server ID encodes everything. Just call getEmbedUrl directly.
+  if (serverIdRaw && typeof serverIdRaw === "string") {
+    req.log.info({ serverId: serverIdRaw.slice(0, 40) }, "stream requested via serverId (fast path)");
+
+    const sourcesResult = await getEmbedUrl(serverIdRaw);
+    if (!sourcesResult?.url) {
+      res.status(502).json({ error: "Could not resolve embed URL from serverId" });
+      return;
+    }
+
+    const stream = await extractStream(sourcesResult.url, "direct", {
+      intro: sourcesResult.skip_data?.intro,
+      outro: sourcesResult.skip_data?.outro,
+    }, proxyUrl);
+
+    if (stream && '_dghgProxy' in stream) {
+      const proxyInfo = (stream as Record<string, unknown>)._dghgProxy as {
+        url: string; id: string; host: string; resultEndpoint: string; player_url?: string;
+      };
+      res.json({
+        type: "dghg_proxy",
+        proxy_url: proxyInfo.url,
+        player_url: proxyInfo.player_url,
+        video_id: proxyInfo.id,
+        host: proxyInfo.host,
+        result_endpoint: proxyInfo.resultEndpoint,
+        _server: "DGHG",
+      });
+      return;
+    }
+
+    if (stream?.m3u8) {
+      res.json({ ...stream, _server: "direct" });
+      return;
+    }
+
+    res.status(502).json({ error: "Stream extraction failed from serverId" });
+    return;
+  }
+
   let animeId: string;
   let ep: number;
 
-  // New format: episodeId = "naruto-76396-ep-1"
+  // episodeId = "naruto-76396-ep-1"
   if (episodeIdRaw && typeof episodeIdRaw === "string") {
     const match = episodeIdRaw.match(/^(.+)-ep-(\d+)$/);
     if (!match) {
@@ -154,14 +204,11 @@ router.get("/stream", async (req, res): Promise<void> => {
     }
   }
   else {
-    res.status(400).json({ error: "Provide either episodeId (e.g. naruto-76396-ep-1) or id + ep" });
+    res.status(400).json({ error: "Provide serverId, episodeId, or id + ep" });
     return;
   }
 
-  const type: "sub" | "dub" | "raw" =
-    typeRaw === "dub" ? "dub" : typeRaw === "raw" ? "raw" : "sub";
   const serverName = typeof serverParam === "string" ? serverParam : null;
-  const proxyUrl = typeof proxyParam === "string" ? proxyParam : null;
 
   req.log.info({ animeId, ep, type, server: serverName, proxy: proxyUrl != null }, "stream requested");
 

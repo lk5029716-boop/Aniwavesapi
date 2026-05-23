@@ -184,13 +184,14 @@ select{appearance:auto;cursor:pointer}
   </div>
   <div class="ep-body">
     <div class="params">
-      <div>
-        <label>Anime ID (id)</label>
-        <input id="st_id" value="naruto-76396" placeholder="anime-id">
+      <div class="full">
+        <label>serverId (from /api/servers — fastest)</label>
+        <input id="st_sid" placeholder="Paste server ID here for direct extraction">
       </div>
+      <div style="text-align:center;color:#666;font-size:12px;margin:4px 0">— OR use episode + server name —</div>
       <div>
-        <label>Episode (ep)</label>
-        <input id="st_ep" type="number" value="1">
+        <label>Episode ID (episodeId)</label>
+        <input id="st_eid" value="naruto-76396-ep-1" placeholder="animeId-ep-N">
       </div>
       <div>
         <label>Type</label>
@@ -204,6 +205,15 @@ select{appearance:auto;cursor:pointer}
           <option value="byfms">BYFMS</option>
           <option value="dghg">DGHG</option>
         </select>
+      </div>
+      <div></div>
+      <div>
+        <label>Legacy: Anime ID (id)</label>
+        <input id="st_id" value="naruto-76396" placeholder="anime-id">
+      </div>
+      <div>
+        <label>Legacy: Episode (ep)</label>
+        <input id="st_ep" type="number" value="1">
       </div>
     </div>
     <div class="try-row">
@@ -304,9 +314,13 @@ function doServers(){
   else{fetchEp('/api/servers',{id:id,ep:ep,type:type},'sr')}
 }
 function doStream(){
-  var id=$('st_id').value.trim(),ep=$('st_ep').value,type=$('st_type').value,s=$('st_srv').value;
-  var p={episodeId:id+'-ep-'+ep,type:type};if(s)p.server=s;
-  fetchEp('/api/stream',p,'st');
+  var sid=$('st_sid').value.trim(),eid=$('st_eid').value.trim(),type=$('st_type').value,s=$('st_srv').value;
+  var id=$('st_id').value.trim(),ep=$('st_ep').value;
+  // Priority: serverId > episodeId > legacy id+ep
+  if(sid){fetchEp('/api/stream',{serverId:sid},'st');return}
+  if(eid){var p={episodeId:eid,type:type};if(s)p.server=s;fetchEp('/api/stream',p,'st');return}
+  if(id&&ep){fetchEp('/api/stream',{id:id,ep:ep,type:type,server:s},'st');return}
+  showResp('st','','Provide serverId or episodeId or id+ep',true);
 }
 
 /* Player */
@@ -348,11 +362,39 @@ function doPlay(){
   if(!id){setOverlay('❌','Enter an anime ID');return}
   if(pollIv)clearInterval(pollIv);
   setOverlay('⏳','Loading...','Fetching stream URL');
-  var p=new URLSearchParams({episodeId:id+'-ep-'+ep,type:type});if(s)p.set('server',s);
+
+  // If a specific server is selected, use serverId fast path
+  if(s){
+    // First get server list to find the serverId
+    var serversUrl=BASE+'/api/servers?episodeId='+encodeURIComponent(id+'-ep-'+ep)+'&type='+type;
+    fetch(serversUrl).then(function(r){return r.json()}).then(function(sd){
+      if(!sd.servers||!sd.servers.length){setOverlay('❌','No servers found');return}
+      // Find matching server by name
+      var target=sd.servers.find(function(srv){return srv.name.toLowerCase().includes(s.toLowerCase());});
+      if(!target){setOverlay('❌','Server "'+s+'" not found');return}
+      // Use serverId fast path
+      streamByServerId(target.id,target.name);
+    }).catch(function(e){setOverlay('❌','Server lookup failed: '+e.message)});
+    return;
+  }
+
+  // Auto mode: try all servers
+  var p=new URLSearchParams({episodeId:id+'-ep-'+ep,type:type});
   fetch(BASE+'/api/stream?'+p).then(function(r){return r.json()}).then(function(d){
     if(d.m3u8){showVideo(d._server||'Unknown');playHLS(d.m3u8)}
     else if(d.type==='dghg_proxy'){doDGHG(d)}
-    else{setOverlay('❌',d.error||'Stream not found')}
+    else if(d.error){setOverlay('❌',d.error)}
+    else{setOverlay('❌','Stream not found')}
+  }).catch(function(e){setOverlay('❌',e.message)});
+}
+
+function streamByServerId(serverId, serverName){
+  setOverlay('⏳','Loading...','Extracting stream from '+(serverName||'Server'));
+  fetch(BASE+'/api/stream?serverId='+encodeURIComponent(serverId)).then(function(r){return r.json()}).then(function(d){
+    if(d.m3u8){showVideo(serverName||d._server||'Direct');playHLS(d.m3u8)}
+    else if(d.type==='dghg_proxy'){doDGHG(d)}
+    else if(d.error){setOverlay('❌',d.error)}
+    else{setOverlay('❌','Stream not found')}
   }).catch(function(e){setOverlay('❌',e.message)});
 }
 
