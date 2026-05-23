@@ -112,23 +112,17 @@ router.get("/servers", async (req, res): Promise<void> => {
  * proxy: optional proxy URL for DGHG/Turnstile flows
  */
 router.get("/stream", async (req, res): Promise<void> => {
-  const serverIdRaw = Array.isArray(req.query["serverId"])
-    ? req.query["serverId"][0]
-    : req.query["serverId"];
-  const proxyParam = Array.isArray(req.query["proxy"])
-    ? req.query["proxy"][0]
-    : req.query["proxy"];
-
-  if (!serverIdRaw || typeof serverIdRaw !== "string") {
-    res.status(400).json({ error: "Missing query param: serverId" });
+  const { serverId } = req.query;
+  if (!serverId || typeof serverId !== "string") {
+    res.status(400).json({ error: "serverId is required" });
     return;
   }
 
-  const proxyUrl = typeof proxyParam === "string" ? proxyParam : null;
+  const proxyUrl = typeof req.query["proxy"] === "string" ? req.query["proxy"] : null;
 
-  req.log.info({ serverId: serverIdRaw.slice(0, 40) }, "stream requested via serverId");
+  req.log.info({ serverId: serverId.slice(0, 40) }, "stream requested via serverId");
 
-  const sourcesResult = await getEmbedUrl(serverIdRaw);
+  const sourcesResult = await getEmbedUrl(serverId);
   if (!sourcesResult?.url) {
     res.status(502).json({ error: "Could not resolve embed URL from serverId" });
     return;
