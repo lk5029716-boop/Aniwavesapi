@@ -107,252 +107,60 @@ router.get("/servers", async (req, res): Promise<void> => {
 });
 
 /**
- * GET /api/stream?serverId=<server_id_from_servers_output>
- *   OR /api/stream?episodeId=naruto-76396-ep-1&type=sub&server=vidplay
- *   OR /api/stream?id=naruto-76396&ep=1&type=sub&server=vidplay (legacy)
+ * GET /api/stream?serverId=<server_id_from_servers_output>&proxy=https://...
  * serverId: the `id` field from /api/servers output — everything is encoded inside
- * episodeId format: "{animeSlug}-ep-{number}" — carries the anime ID inside
+ * proxy: optional proxy URL for DGHG/Turnstile flows
  */
 router.get("/stream", async (req, res): Promise<void> => {
   const serverIdRaw = Array.isArray(req.query["serverId"])
     ? req.query["serverId"][0]
     : req.query["serverId"];
-  const episodeIdRaw = Array.isArray(req.query["episodeId"])
-    ? req.query["episodeId"][0]
-    : req.query["episodeId"];
-  const idRaw = Array.isArray(req.query["id"])
-    ? req.query["id"][0]
-    : req.query["id"];
-  const epRaw = Array.isArray(req.query["ep"])
-    ? req.query["ep"][0]
-    : req.query["ep"];
-  const typeRaw = Array.isArray(req.query["type"])
-    ? req.query["type"][0]
-    : req.query["type"];
-  const serverParam = Array.isArray(req.query["server"])
-    ? req.query["server"][0]
-    : req.query["server"];
   const proxyParam = Array.isArray(req.query["proxy"])
     ? req.query["proxy"][0]
     : req.query["proxy"];
 
-  const type: "sub" | "dub" | "raw" =
-    typeRaw === "dub" ? "dub" : typeRaw === "raw" ? "raw" : "sub";
+  if (!serverIdRaw || typeof serverIdRaw !== "string") {
+    res.status(400).json({ error: "Missing query param: serverId" });
+    return;
+  }
+
   const proxyUrl = typeof proxyParam === "string" ? proxyParam : null;
 
-  // ── FAST PATH: serverId from /api/servers output ──────────────────────────
-  // The server ID encodes everything. Just call getEmbedUrl directly.
-  if (serverIdRaw && typeof serverIdRaw === "string") {
-    req.log.info({ serverId: serverIdRaw.slice(0, 40) }, "stream requested via serverId (fast path)");
+  req.log.info({ serverId: serverIdRaw.slice(0, 40) }, "stream requested via serverId");
 
-    const sourcesResult = await getEmbedUrl(serverIdRaw);
-    if (!sourcesResult?.url) {
-      res.status(502).json({ error: "Could not resolve embed URL from serverId" });
-      return;
-    }
-
-    const stream = await extractStream(sourcesResult.url, "direct", {
-      intro: sourcesResult.skip_data?.intro,
-      outro: sourcesResult.skip_data?.outro,
-    }, proxyUrl);
-
-    if (stream && '_dghgProxy' in stream) {
-      const proxyInfo = (stream as Record<string, unknown>)._dghgProxy as {
-        url: string; id: string; host: string; resultEndpoint: string; player_url?: string;
-      };
-      res.json({
-        type: "dghg_proxy",
-        proxy_url: proxyInfo.url,
-        player_url: proxyInfo.player_url,
-        video_id: proxyInfo.id,
-        host: proxyInfo.host,
-        result_endpoint: proxyInfo.resultEndpoint,
-        _server: "DGHG",
-      });
-      return;
-    }
-
-    if (stream?.m3u8) {
-      res.json({ ...stream, _server: "direct" });
-      return;
-    }
-
-    res.status(502).json({ error: "Stream extraction failed from serverId" });
+  const sourcesResult = await getEmbedUrl(serverIdRaw);
+  if (!sourcesResult?.url) {
+    res.status(502).json({ error: "Could not resolve embed URL from serverId" });
     return;
   }
 
-  let animeId: string;
-  let ep: number;
+  const stream = await extractStream(sourcesResult.url, "direct", {
+    intro: sourcesResult.skip_data?.intro,
+    outro: sourcesResult.skip_data?.outro,
+  }, proxyUrl);
 
-  // episodeId = "naruto-76396-ep-1"
-  if (episodeIdRaw && typeof episodeIdRaw === "string") {
-    const match = episodeIdRaw.match(/^(.+)-ep-(\d+)$/);
-    if (!match) {
-      res.status(400).json({ error: "Invalid episodeId format. Expected: animeSlug-ep-N (e.g. naruto-76396-ep-1)" });
-      return;
-    }
-    animeId = match[1];
-    ep = parseInt(match[2], 10);
-  }
-  // Legacy format: id + ep
-  else if (idRaw && typeof idRaw === "string" && epRaw) {
-    animeId = idRaw;
-    ep = parseInt(String(epRaw), 10);
-    if (isNaN(ep)) {
-      res.status(400).json({ error: "param ep must be a number" });
-      return;
-    }
-  }
-  else {
-    res.status(400).json({ error: "Provide serverId, episodeId, or id + ep" });
-    return;
-  }
-
-  const serverName = typeof serverParam === "string" ? serverParam : null;
-
-  req.log.info({ animeId, ep, type, server: serverName, proxy: proxyUrl != null }, "stream requested");
-
-  // 1. Get server list
-  const servers = await getServers(animeId, ep, type);
-  if (servers.length === 0) {
-    res.status(404).json({ error: "No servers found for this episode/type" });
-    return;
-  }
-
-  req.log.debug({ servers: servers.map((s) => s.name) }, "available servers");
-
-  // 2. If a specific server was requested, only try that server
-  if (serverName) {
-    const targetServer = servers.find((s) =>
-      s.name.toLowerCase().includes(serverName.toLowerCase())
-    );
-
-    if (!targetServer) {
-      res.status(404).json({
-        error: `Server "${serverName}" not available for this episode`,
-        availableServers: servers.map((s) => s.name),
-      });
-      return;
-    }
-
-    const sourcesResult = await getEmbedUrl(targetServer.id, animeId);
-    if (!sourcesResult?.url) {
-      res.status(502).json({ error: `Could not resolve embed URL for server "${serverName}"` });
-      return;
-    }
-
-    const stream = await extractStream(sourcesResult.url, targetServer.name, {
-      intro: sourcesResult.skip_data?.intro,
-      outro: sourcesResult.skip_data?.outro,
-    }, proxyUrl);
-
-    // DGHG proxy response — return client-side Turnstile solving info
-    if (stream && '_dghgProxy' in stream) {
-      const proxyInfo = (stream as Record<string, unknown>)._dghgProxy as {
-        url: string; id: string; host: string; resultEndpoint: string; player_url?: string;
-      };
-      req.log.info({ serverName: targetServer.name, proxyUrl: proxyInfo.url.slice(0, 80) }, "DGHG proxy URL returned for client-side Turnstile solving");
-      res.json({
-        type: "dghg_proxy",
-        proxy_url: proxyInfo.url,
-        player_url: proxyInfo.player_url,
-        video_id: proxyInfo.id,
-        host: proxyInfo.host,
-        result_endpoint: proxyInfo.resultEndpoint,
-        _server: targetServer.name,
-        _skip: stream?.intro || stream?.outro ? { intro: stream?.intro, outro: stream?.outro } : undefined,
-      });
-      return;
-    }
-
-    if (stream?.m3u8) {
-      req.log.info({ serverName: targetServer.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
-      res.json({ ...stream, _server: targetServer.name });
-      return;
-    }
-
-    // Include DGHG debug info if available
-    const dghgDebug = stream && '_dghgDebug' in stream ? (stream as Record<string, unknown>)._dghgDebug : null;
-
-    res.status(502).json({
-      error: `Server "${serverName}" failed to extract stream`,
-      server: targetServer.name,
-      debug: dghgDebug,
+  if (stream && '_dghgProxy' in stream) {
+    const proxyInfo = (stream as Record<string, unknown>)._dghgProxy as {
+      url: string; id: string; host: string; resultEndpoint: string; player_url?: string;
+    };
+    res.json({
+      type: "dghg_proxy",
+      proxy_url: proxyInfo.url,
+      player_url: proxyInfo.player_url,
+      video_id: proxyInfo.id,
+      host: proxyInfo.host,
+      result_endpoint: proxyInfo.resultEndpoint,
+      _server: "DGHG",
     });
     return;
   }
 
-  // 3. No specific server — try working servers first, deprioritize DGHG
-  //    DGHG/myvidplay/playmogo/doodstream use Cloudflare Turnstile which
-  //    requires Playwright + headless Chromium (~60s timeout each). They almost
-  //    never succeed on Render and just waste time. Push them to the end.
-  const DEPRIORITIZED = ["dghg", "myvidplay", "playmogo", "doodstream", "dood"];
-  const sortedServers = [...servers].sort((a, b) => {
-    const aLow = a.name.toLowerCase();
-    const bLow = b.name.toLowerCase();
-    const aDep = DEPRIORITIZED.some((d) => aLow.includes(d));
-    const bDep = DEPRIORITIZED.some((d) => bLow.includes(d));
-    if (aDep && !bDep) return 1;   // a goes after b
-    if (!aDep && bDep) return -1;  // a goes before b
-    return 0;                       // keep original order
-  });
-
-  const failedServers: string[] = [];
-
-  for (const server of sortedServers) {
-    req.log.info(
-      { serverName: server.name, linkId: server.id.slice(0, 30) },
-      "trying server"
-    );
-
-    const sourcesResult = await getEmbedUrl(server.id, animeId);
-    if (!sourcesResult?.url) {
-      req.log.warn({ serverName: server.name }, "could not resolve embed URL — skipping");
-      failedServers.push(server.name);
-      continue;
-    }
-
-    const stream = await extractStream(sourcesResult.url, server.name, {
-      intro: sourcesResult.skip_data?.intro,
-      outro: sourcesResult.skip_data?.outro,
-    }, proxyUrl);
-
-    // DGHG proxy response — return client-side Turnstile solving info
-    if (stream && '_dghgProxy' in stream) {
-      const proxyInfo = (stream as Record<string, unknown>)._dghgProxy as {
-        url: string; id: string; host: string; resultEndpoint: string; player_url?: string;
-      };
-      req.log.info({ serverName: server.name, proxyUrl: proxyInfo.url.slice(0, 80) }, "DGHG proxy URL returned for client-side Turnstile solving");
-      res.json({
-        type: "dghg_proxy",
-        proxy_url: proxyInfo.url,
-        player_url: proxyInfo.player_url,
-        video_id: proxyInfo.id,
-        host: proxyInfo.host,
-        result_endpoint: proxyInfo.resultEndpoint,
-        _server: server.name,
-        _failedServers: failedServers,
-      });
-      return;
-    }
-
-    if (stream?.m3u8) {
-      req.log.info({ serverName: server.name, m3u8: stream.m3u8.slice(0, 60) }, "stream extracted");
-      res.json({ ...stream, _server: server.name, _failedServers: failedServers });
-      return;
-    }
-
-    req.log.warn(
-      { serverName: server.name },
-      "extraction failed — trying next server"
-    );
-    failedServers.push(server.name);
+  if (stream?.m3u8) {
+    res.json({ ...stream, _server: "direct" });
+    return;
   }
 
-  res.status(502).json({
-    error: "All servers failed — check logs for stage-by-stage detail",
-    failedServers,
-  });
+  res.status(502).json({ error: "Stream extraction failed from serverId" });
 });
 
 /**
