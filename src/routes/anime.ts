@@ -172,6 +172,7 @@ router.get("/stream", async (req, res): Promise<void> => {
       res.json({
         type: "dghg_proxy",
         proxy_url: proxyInfo.url,
+        player_url: proxyInfo.player_url,
         video_id: proxyInfo.id,
         host: proxyInfo.host,
         result_endpoint: proxyInfo.resultEndpoint,
@@ -242,6 +243,7 @@ router.get("/stream", async (req, res): Promise<void> => {
       res.json({
         type: "dghg_proxy",
         proxy_url: proxyInfo.url,
+        player_url: proxyInfo.player_url,
         video_id: proxyInfo.id,
         host: proxyInfo.host,
         result_endpoint: proxyInfo.resultEndpoint,
