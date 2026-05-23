@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Aniwaves API</title>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"><\/script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;min-height:100vh;padding:20px}
@@ -23,20 +23,17 @@ button:disabled{background:#333;color:#666;cursor:not-allowed}
 .result:empty{display:none}
 .ok{color:#00ff88}.err{color:#ff4444}.info{color:#ffaa00}
 .url-display{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:8px 12px;font-family:monospace;font-size:12px;color:#888;margin-top:8px;word-break:break-all}
-/* Video Player */
-#video-section .player-wrap{position:relative;background:#000;border-radius:8px;overflow:hidden;margin-top:16px;aspect-ratio:16/9;max-height:600px}
-#video{width:100%;height:100%;display:block;border-radius:8px}
-#player-overlay{position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:5;border-radius:8px}
-#player-overlay.hidden{display:none}
-#player-overlay .icon{font-size:48px;margin-bottom:12px}
-#player-overlay .msg{font-size:16px;margin-bottom:6px}
-#player-overlay .sub{font-size:13px;color:#666;text-align:center;padding:0 20px;line-height:1.5}
-#player-overlay .err{color:#ff4444;font-size:13px;margin-top:10px;text-align:center;padding:0 20px}
-#player-overlay button{margin-top:14px}
-#player-info{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1a1a1a;border-radius:6px;margin-top:8px;font-size:13px}
-#player-info .tag{display:inline-block;padding:2px 10px;border-radius:4px;font-size:11px;font-weight:600;margin-left:8px}
-#player-info .tag.vidplay{background:#00d4ff22;color:#00d4ff}
-#player-info .tag.dghg{background:#ff880022;color:#ffaa00}
+#pOverlay{position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:5;border-radius:8px}
+#pOverlay.hidden{display:none}
+#pOverlay .icon{font-size:48px;margin-bottom:12px}
+#pOverlay .msg{font-size:16px;margin-bottom:6px}
+#pOverlay .sub{font-size:13px;color:#666;text-align:center;padding:0 20px;line-height:1.5}
+#pOverlay .err{color:#ff4444;font-size:13px;margin-top:10px;text-align:center;padding:0 20px}
+#pOverlay button{margin-top:14px}
+#pInfo{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1a1a1a;border-radius:6px;margin-top:8px;font-size:13px}
+#pInfo .tag{display:inline-block;padding:2px 10px;border-radius:4px;font-size:11px;font-weight:600;margin-left:8px}
+#pInfo .tag.vidplay{background:#00d4ff22;color:#00d4ff}
+#pInfo .tag.dghg{background:#ff880022;color:#ffaa00}
 .dghg-note{background:#ff880011;border:1px solid #ff880033;border-radius:6px;padding:10px 14px;margin-top:12px;font-size:13px;color:#ffaa00;line-height:1.5}
 </style>
 </head>
@@ -100,251 +97,205 @@ button:disabled{background:#333;color:#666;cursor:not-allowed}
 <div class="result" id="stream-result"></div>
 </div>
 
-<!-- VIDEO PLAYER -->
-<div class="section" id="video-section">
+<div class="section">
 <h2>🎬 Video Player</h2>
 <label>Anime ID *</label>
-<input id="play-id" placeholder="e.g. naruto-76396" value="naruto-76396">
+<input id="playId" placeholder="e.g. naruto-76396" value="naruto-76396">
 <label>Episode Number *</label>
-<input id="play-ep" type="number" placeholder="e.g. 1" value="1">
+<input id="playEp" type="number" placeholder="e.g. 1" value="1">
 <label>Type</label>
-<select id="play-type"><option value="sub">sub</option><option value="dub">dub</option></select>
+<select id="playType"><option value="sub">sub</option><option value="dub">dub</option></select>
 <label>Server</label>
-<select id="play-server"><option value="">Auto</option><option value="vidplay">Vidplay</option><option value="byfms">BYFMS</option><option value="dghg">DGHG</option></select>
+<select id="playServer" onchange="document.getElementById('dghgNote').style.display=this.value==='dghg'?'block':'none'"><option value="">Auto</option><option value="vidplay">Vidplay</option><option value="byfms">BYFMS</option><option value="dghg">DGHG</option></select>
 <br>
 <button onclick="playVideo()">▶ Play</button>
-
-<div class="dghg-note" id="dghg-note" style="display:none">
-⚠️ <strong>DGHG Server:</strong> A popup will open for Cloudflare Turnstile verification. Complete the challenge and the stream will start automatically.
-</div>
-
-<div class="player-wrap">
-  <div id="player-overlay">
-    <div class="icon" id="pIcon">▶️</div>
-    <div class="msg" id="pMsg">Enter details above and click Play</div>
-    <div class="sub" id="pSub">Supports Vidplay, BYFMS, and DGHG servers</div>
-    <div class="err" id="pErr"></div>
+<div class="dghg-note" id="dghgNote" style="display:none">⚠️ <strong>DGHG:</strong> A popup will open for Cloudflare Turnstile. Complete the challenge and the stream starts automatically.</div>
+<div style="position:relative;background:#000;border-radius:8px;overflow:hidden;margin-top:16px;aspect-ratio:16/9;max-height:600px">
+  <div id="pOverlay">
+    <div style="font-size:48px;margin-bottom:12px" id="pIcon">▶️</div>
+    <div style="font-size:16px;margin-bottom:6px" id="pMsg">Enter details above and click Play</div>
+    <div style="font-size:13px;color:#666;text-align:center;padding:0 20px" id="pSub">Supports Vidplay, BYFMS, and DGHG</div>
+    <div style="color:#ff4444;font-size:13px;margin-top:10px;text-align:center;padding:0 20px" id="pErr"></div>
     <button id="pBtn" style="display:none"></button>
   </div>
-  <video id="video" controls playsinline style="display:none"></video>
+  <video id="video" controls playsinline style="width:100%;height:100%;display:none;border-radius:8px"></video>
 </div>
-<div id="player-info" style="display:none">
+<div id="pInfo" style="display:none">
   <span id="pInfoLeft"></span>
   <span id="pInfoRight"></span>
 </div>
 </div>
 
-<script>
-const BASE = 'https://aniwavesapis.onrender.com';
-const WORKER = 'https://dghg-proxy.lk5029716.workers.dev';
+<script type="text/javascript">
+var BASE = 'https://aniwavesapis.onrender.com';
+var WORKER = 'https://dghg-proxy.lk5029716.workers.dev';
+var hls = null;
+var pollInterval = null;
 
-// ── Existing API test functions ──
 function showUrl(id,url){document.getElementById(id).textContent=url}
 function showResult(id,data,isErr){
-  const el=document.getElementById(id);
+  var el=document.getElementById(id);
   el.textContent=typeof data==='string'?data:JSON.stringify(data,null,2);
   el.className='result '+(isErr?'err':'ok');
 }
-async function fetchAPI(url,resultId){
-  showResult(resultId,'⏳ Loading...',false);
-  try{
-    const r=await fetch(url);
-    const t=await r.text();
-    let d;try{d=JSON.parse(t)}catch{d=t}
-    if(r.ok) showResult(resultId,d,false);
-    else showResult(resultId,'HTTP '+r.status+'\\n'+t,true);
-  }catch(e){showResult(resultId,'Error: '+e.message,true)}
+function fetchAPI(url,resultId){
+  showResult(resultId,'Loading...',false);
+  fetch(url).then(function(r){return r.text()}).then(function(t){
+    var d;try{d=JSON.parse(t)}catch(e){d=t}
+    showResult(resultId,d,!r.ok);
+  }).catch(function(e){showResult(resultId,'Error: '+e.message,true)});
 }
 function buildUrl(path,params){
-  const p=new URLSearchParams();
-  for(const[k,v]of Object.entries(params)){if(v)p.set(k,v)}
-  const q=p.toString();return BASE+path+(q?'?'+q:'');
+  var p=new URLSearchParams();
+  for(var k in params){if(params[k])p.set(k,params[k]);}
+  var q=p.toString();return BASE+path+(q?'?'+q:'');
 }
 function doSearch(){
-  const q=document.getElementById('search-q').value;
-  const url=buildUrl('/api/search',{q});
+  var q=document.getElementById('search-q').value;
+  var url=buildUrl('/api/search',{q:q});
   showUrl('search-url',url);fetchAPI(url,'search-result');
 }
 function doDetails(){
-  const id=document.getElementById('details-id').value;
-  const url=buildUrl('/api/details',{id});
+  var id=document.getElementById('details-id').value;
+  var url=buildUrl('/api/details',{id:id});
   showUrl('details-url',url);fetchAPI(url,'details-result');
 }
 function doEpisodes(){
-  const id=document.getElementById('episodes-id').value;
-  const url=buildUrl('/api/episodes',{id});
+  var id=document.getElementById('episodes-id').value;
+  var url=buildUrl('/api/episodes',{id:id});
   showUrl('episodes-url',url);fetchAPI(url,'episodes-result');
 }
 function doServers(){
-  const id=document.getElementById('servers-id').value;
-  const ep=document.getElementById('servers-ep').value;
-  const type=document.getElementById('servers-type').value;
-  const url=buildUrl('/api/servers',{id,ep,type});
+  var id=document.getElementById('servers-id').value;
+  var ep=document.getElementById('servers-ep').value;
+  var type=document.getElementById('servers-type').value;
+  var url=buildUrl('/api/servers',{id:id,ep:ep,type:type});
   showUrl('servers-url',url);fetchAPI(url,'servers-result');
 }
 function doStream(){
-  const id=document.getElementById('stream-id').value;
-  const ep=document.getElementById('stream-ep').value;
-  const type=document.getElementById('stream-type').value;
-  const server=document.getElementById('stream-server').value;
-  const params={id,ep,type};
+  var id=document.getElementById('stream-id').value;
+  var ep=document.getElementById('stream-ep').value;
+  var type=document.getElementById('stream-type').value;
+  var server=document.getElementById('stream-server').value;
+  var params={id:id,ep:ep,type:type};
   if(server)params.server=server;
-  const url=buildUrl('/api/stream',params);
+  var url=buildUrl('/api/stream',params);
   showUrl('stream-url',url);fetchAPI(url,'stream-result');
 }
 
-// ── DGHG note ──
-document.getElementById('play-server').addEventListener('change',function(){
-  document.getElementById('dghg-note').style.display=this.value==='dghg'?'block':'none';
-});
-
-// ── Video Player ──
-let hls = null;
-let pollInterval = null;
-
-function setPlayer(icon,msg,sub,err){
+function setP(icon,msg,sub,err){
   document.getElementById('pIcon').textContent=icon;
   document.getElementById('pMsg').textContent=msg;
   document.getElementById('pSub').textContent=sub||'';
-  document.getElementById('pErr').textContent=err||';
-  document.getElementById('player-overlay').classList.remove('hidden');
+  document.getElementById('pErr').textContent=err||'';
+  document.getElementById('pOverlay').classList.remove('hidden');
   document.getElementById('video').style.display='none';
-  document.getElementById('player-info').style.display='none';
+  document.getElementById('pInfo').style.display='none';
   document.getElementById('pBtn').style.display='none';
 }
-
-function showVideoOverlay(icon,msg,sub){
+function showOverlay(icon,msg,sub){
   document.getElementById('pIcon').textContent=icon;
   document.getElementById('pMsg').textContent=msg;
   document.getElementById('pSub').textContent=sub||'';
   document.getElementById('pErr').textContent='';
-  document.getElementById('player-overlay').classList.remove('hidden');
+  document.getElementById('pOverlay').classList.remove('hidden');
   document.getElementById('video').style.display='none';
   document.getElementById('pBtn').style.display='none';
 }
-
-function showVideo(serverName){
-  document.getElementById('player-overlay').classList.add('hidden');
+function showPlayer(sName){
+  document.getElementById('pOverlay').classList.add('hidden');
   document.getElementById('video').style.display='block';
-  document.getElementById('player-info').style.display='flex';
-  const tag = serverName==='dghg'?'dghg':'vidplay';
-  document.getElementById('pInfoRight').innerHTML = `<span class="tag ${tag}">${serverName}</span>`;
+  document.getElementById('pInfo').style.display='flex';
+  var tag=sName==='dghg'?'dghg':'vidplay';
+  document.getElementById('pInfoRight').innerHTML='<span class="tag '+tag+'">'+sName+'</span>';
 }
-
-function playM3u8(url, serverName){
-  const video = document.getElementById('video');
-  showVideo(serverName);
-  document.getElementById('pInfoLeft').textContent = `${document.getElementById('play-id').value} — Ep ${document.getElementById('play-ep').value}`;
-
+function playM3u8(url,sName){
+  var video=document.getElementById('video');
+  showPlayer(sName);
+  document.getElementById('pInfoLeft').textContent=document.getElementById('playId').value+' — Ep '+document.getElementById('playEp').value;
   if(Hls.isSupported()){
-    hls = new Hls({enableWorker:true,lowLatencyMode:true});
+    hls=new Hls({enableWorker:true,lowLatencyMode:true});
     hls.loadSource(url);
     hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED,()=>video.play().catch(()=>{}));
-    hls.on(Hls.Events.ERROR,(e,d)=>{
-      if(d.fatal){
-        if(hls){hls.destroy();hls=null;}
-        setPlayer('❌','Playback error','Stream failed to load','Type: '+d.type);
-      }
+    hls.on(Hls.Events.MANIFEST_PARSED,function(){video.play();});
+    hls.on(Hls.Events.ERROR,function(e,d){
+      if(d.fatal){if(hls){hls.destroy();hls=null;}setP('❌','Playback error','Stream failed','Type: '+d.type);}
     });
-  } else if(video.canPlayType('application/vnd.apple.mpegurl')){
-    video.src = url;
-    video.addEventListener('loadedmetadata',()=>video.play().catch(()=>{}));
-  } else {
-    setPlayer('❌','Browser not supported','Your browser cannot play HLS streams');
+  }else if(video.canPlayType('application/vnd.apple.mpegurl')){
+    video.src=url;
+    video.addEventListener('loadedmetadata',function(){video.play();});
+  }else{
+    setP('❌','Not supported','Browser cannot play HLS');
   }
 }
 
-async function playVideo(){
-  const id = document.getElementById('play-id').value.trim();
-  const ep = document.getElementById('play-ep').value;
-  const type = document.getElementById('play-type').value;
-  const server = document.getElementById('play-server').value;
-
-  if(!id){setPlayer('❌','Missing Anime ID','Enter an anime ID like naruto-76396');return;}
-
+function playVideo(){
+  var id=document.getElementById('playId').value.trim();
+  var ep=document.getElementById('playEp').value;
+  var type=document.getElementById('playType').value;
+  var server=document.getElementById('playServer').value;
+  if(!id){setP('❌','Missing Anime ID','Enter an anime ID');return;}
   if(hls){hls.destroy();hls=null;}
-  if(pollInterval){clearInterval(pollInterval);}
-
-  setPlayer('⏳','Loading...','Fetching stream from '+(server||'auto'));
-
-  try{
-    const params = new URLSearchParams({id,ep,type});
-    if(server) params.set('server',server);
-    const resp = await fetch(`${BASE}/api/stream?${params}`);
-    const data = await resp.json();
-
+  if(pollInterval)clearInterval(pollInterval);
+  setP('⏳','Loading...','Fetching from '+(server||'auto'));
+  var params=new URLSearchParams({id:id,ep:ep,type:type});
+  if(server)params.set('server',server);
+  fetch(BASE+'/api/stream?'+params).then(function(r){return r.json()}).then(function(data){
     if(data.m3u8){
-      playM3u8(data.m3u8, data._server||'Unknown');
-    } else if(data.type==='dghg_proxy'){
+      playM3u8(data.m3u8,data._server||'Unknown');
+    }else if(data.type==='dghg_proxy'){
       solveDghg(data);
-    } else if(data.error){
-      setPlayer('❌','Stream failed',data.error,'');
+    }else if(data.error){
+      setP('❌','Failed',data.error,'');
     }
-  }catch(e){
-    setPlayer('❌','Request failed',e.message,'');
-  }
+  }).catch(function(e){setP('❌','Error',e.message,'');});
 }
 
 function solveDghg(data){
-  const videoId = data.video_id;
-  const host = data.host;
-  const proxyUrl = data.proxy_url;
-  const resultUrl = `${WORKER}/__dghg_result?id=${encodeURIComponent(videoId)}`;
-
-  showVideoOverlay('🔐','DGHG Turnstile Verification','A popup opened — complete the challenge there');
-
-  const w=520,h=580;
-  const popup = window.open(proxyUrl,'dghg_popup',
-    `width=${w},height=${h},left=${(screen.width-w)/2},top=${(screen.height-h)/2}`);
-
+  var videoId=data.video_id;
+  var host=data.host;
+  var proxyUrl=data.proxy_url;
+  var resultUrl=WORKER+'/__dghg_result?id='+encodeURIComponent(videoId);
+  showOverlay('🔐','DGHG Turnstile','Popup opened — solve the challenge');
+  var popup=window.open(proxyUrl,'dghg_popup','width=520,height=580');
   if(!popup){
-    showVideoOverlay('🔐','Popup blocked','Click below to open Turnstile page');
-    document.getElementById('pBtn').textContent='Open Turnstile Page';
+    showOverlay('🔐','Popup blocked','Click below to open Turnstile');
+    document.getElementById('pBtn').textContent='Open Turnstile';
     document.getElementById('pBtn').style.display='inline-block';
-    document.getElementById('pBtn').onclick=()=>{
-      window.open(proxyUrl,'dghg_popup',`width=${w},height=${h}`);
-      startDghgPoll(resultUrl,videoId,host);
+    document.getElementById('pBtn').onclick=function(){
+      window.open(proxyUrl,'dghg_popup','width=520,height=580');
+      startPoll();
     };
     return;
   }
-  startDghgPoll(resultUrl,videoId,host);
-}
-
-async function startDghgPoll(resultUrl,videoId,host){
-  let polls=0;
-  pollInterval = setInterval(async()=>{
-    polls++;
-    if(polls>180){
-      clearInterval(pollInterval);
-      setPlayer('⏰','Timed out','Turnstile not solved in time');
-      return;
-    }
-    try{
-      const r = await fetch(resultUrl);
-      const d = await r.json();
-      if(d.status==='done'){
-        clearInterval(pollInterval);
-        showVideoOverlay('📡','Getting CDN URL...','Almost there...');
-        try{
-          const token = d.passMd5Url.split('/').pop();
-          const cdnR = await fetch(`${BASE}/api/dghg/passmd5?url=${encodeURIComponent(d.passMd5Url)}&referer=https://${host}/e/${videoId}`);
-          const cdnD = await cdnR.json();
-          if(cdnD.cdn_url){
-            const chars='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-            let s='';
-            for(let i=0;i<10;i++) s+=chars.charAt(Math.floor(Math.random()*chars.length));
-            playM3u8(cdnD.cdn_url+s+'?token='+token+'&expiry='+Date.now(),'DGHG');
-          } else {
-            setPlayer('❌','CDN failed','Could not get video URL');
-          }
-        }catch(e){
-          setPlayer('❌','CDN error',e.message);
+  startPoll();
+  function startPoll(){
+    var polls=0;
+    pollInterval=setInterval(function(){
+      polls++;
+      if(polls>180){clearInterval(pollInterval);setP('⏰','Timed out','Turnstile not solved');return;}
+      fetch(resultUrl).then(function(r){return r.json()}).then(function(d){
+        if(d.status==='done'){
+          clearInterval(pollInterval);
+          showOverlay('📡','Getting CDN URL...','Almost there...');
+          var token=d.passMd5Url.split('/').pop();
+          fetch(BASE+'/api/dghg/passmd5?url='+encodeURIComponent(d.passMd5Url)+'&referer=https://'+host+'/e/'+videoId)
+            .then(function(r){return r.json()})
+            .then(function(cdnD){
+              if(cdnD.cdn_url){
+                var chars='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+                var s='';
+                for(var i=0;i<10;i++) s+=chars.charAt(Math.floor(Math.random()*chars.length));
+                playM3u8(cdnD.cdn_url+s+'?token='+token+'&expiry='+Date.now(),'DGHG');
+              }else{
+                setP('❌','CDN failed','Could not get URL');
+              }
+            }).catch(function(e){setP('❌','CDN error',e.message,'');});
         }
-      }
-    }catch(e){/* keep polling */}
-  },1000);
+      }).catch(function(){});
+    },1000);
+  }
 }
-<\/script>
+</script>
 </body>
 </html>
