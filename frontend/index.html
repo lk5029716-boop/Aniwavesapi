@@ -244,17 +244,8 @@ select{appearance:auto;cursor:pointer}
         <label>Type</label>
         <select id="p_type"><option value="sub">sub</option><option value="dub">dub</option></select>
       </div>
-      <div>
-        <label>Server</label>
-        <select id="p_srv" onchange="document.getElementById('dgNote').style.display=this.value==='dghg'?'block':'none'">
-          <option value="">Auto</option>
-          <option value="vidplay">Vidplay</option>
-          <option value="byfms">BYFMS</option>
-          <option value="dghg">DGHG</option>
-        </select>
-      </div>
     </div>
-    <div id="dgNote" class="dg-note">⚠️ DGHG requires Cloudflare Turnstile — a popup will open, solve it and the stream auto-plays.</div>
+    <div id="dgNote" class="dg-note" style="display:none">⚠️ DGHG requires Cloudflare Turnstile — a popup will open, solve it and the stream auto-plays.</div>
     <div class="try-row">
       <button class="btn" onclick="doPlay()">▶ Play</button>
       <button class="btn dark" onclick="doStop()">■ Stop</button>
@@ -358,44 +349,42 @@ function playHLS(url){
 }
 
 function doPlay(){
-  var id=$('p_id').value.trim(),ep=$('p_ep').value,type=$('p_type').value,s=$('p_srv').value;
+  var id=$('p_id').value.trim(),ep=$('p_ep').value,type=$('p_type').value;
   if(!id){setOverlay('❌','Enter an anime ID');return}
   if(pollIv)clearInterval(pollIv);
-  setOverlay('⏳','Loading...','Fetching stream URL');
-
-  // If a specific server is selected, use serverId fast path
-  if(s){
-    // First get server list to find the serverId
-    var serversUrl=BASE+'/api/servers?episodeId='+encodeURIComponent(id+'-ep-'+ep)+'&type='+type;
-    fetch(serversUrl).then(function(r){return r.json()}).then(function(sd){
+  setOverlay('⏳','Loading...','Fetching servers');
+  // Get server list first
+  var epId=id+'-ep-'+ep;
+  fetch(BASE+'/api/servers?episodeId='+encodeURIComponent(epId)+'&type='+type)
+    .then(function(r){return r.json()})
+    .then(function(sd){
       if(!sd.servers||!sd.servers.length){setOverlay('❌','No servers found');return}
-      // Find matching server by name
-      var target=sd.servers.find(function(srv){return srv.name.toLowerCase().includes(s.toLowerCase());});
-      if(!target){setOverlay('❌','Server "'+s+'" not found');return}
-      // Use serverId fast path
-      streamByServerId(target.id,target.name);
-    }).catch(function(e){setOverlay('❌','Server lookup failed: '+e.message)});
-    return;
-  }
-
-  // Auto mode: try all servers
-  var p=new URLSearchParams({episodeId:id+'-ep-'+ep,type:type});
-  fetch(BASE+'/api/stream?'+p).then(function(r){return r.json()}).then(function(d){
-    if(d.m3u8){showVideo(d._server||'Unknown');playHLS(d.m3u8)}
-    else if(d.type==='dghg_proxy'){doDGHG(d)}
-    else if(d.error){setOverlay('❌',d.error)}
-    else{setOverlay('❌','Stream not found')}
-  }).catch(function(e){setOverlay('❌',e.message)});
+      // Remove DGHG from auto-try (needs Turnstile)
+      var autoServers=sd.servers.filter(function(s){return !s.name.toLowerCase().includes('dghg')});
+      if(!autoServers.length){autoServers=sd.servers;} // fallback if only DGHG
+      // Try each server via serverId fast path
+      tryNextServer(autoServers,0,epId,type);
+    })
+    .catch(function(e){setOverlay('❌','Server lookup failed: '+e.message)});
 }
 
-function streamByServerId(serverId, serverName){
-  setOverlay('⏳','Loading...','Extracting stream from '+(serverName||'Server'));
-  fetch(BASE+'/api/stream?serverId='+encodeURIComponent(serverId)).then(function(r){return r.json()}).then(function(d){
-    if(d.m3u8){showVideo(serverName||d._server||'Direct');playHLS(d.m3u8)}
-    else if(d.type==='dghg_proxy'){doDGHG(d)}
-    else if(d.error){setOverlay('❌',d.error)}
-    else{setOverlay('❌','Stream not found')}
-  }).catch(function(e){setOverlay('❌',e.message)});
+function tryNextServer(servers,idx,epId,type){
+  if(idx>=servers.length){setOverlay('❌','All servers failed');return}
+  var srv=servers[idx];
+  setOverlay('⏳','Trying '+srv.name+'...','Server '+(idx+1)+' of '+servers.length);
+  fetch(BASE+'/api/stream?serverId='+encodeURIComponent(srv.id))
+    .then(function(r){return r.json()})
+    .then(function(d){
+      if(d.m3u8){showVideo(srv.name);playHLS(d.m3u8)}
+      else if(d.type==='dghg_proxy'){
+        // DGHG needs Turnstile — show note and open popup
+        $('dgNote').style.display='none';
+        doDGHG(d);
+      }
+      else if(d.error){tryNextServer(servers,idx+1,epId,type)}
+      else{tryNextServer(servers,idx+1,epId,type);}
+    })
+    .catch(function(){tryNextServer(servers,idx+1,epId,type)});
 }
 
 function doStop(){
