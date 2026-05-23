@@ -3,394 +3,165 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Aniwaves Player</title>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<title>Aniwaves API</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;min-height:100vh}
-header{background:#111;border-bottom:1px solid #222;padding:16px 20px;display:flex;align-items:center;gap:12px}
-header h1{color:#00d4ff;font-size:20px}
-header .status{width:8px;height:8px;border-radius:50%;background:#00ff88;animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.main{display:grid;grid-template-columns:300px 1fr;min-height:calc(100vh - 53px)}
-.sidebar{background:#111;border-right:1px solid #222;overflow-y:auto;padding:16px}
-.sidebar h3{color:#00d4ff;font-size:13px;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
-.section{background:#1a1a1a;border:1px solid #222;border-radius:8px;padding:14px;margin-bottom:12px}
-.section label{display:block;font-size:12px;color:#666;margin-bottom:4px;margin-top:8px}
-.section label:first-child{margin-top:0}
-input,select{width:100%;background:#0a0a0a;border:1px solid #333;border-radius:6px;padding:8px 10px;color:#e0e0e0;font-size:13px;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;min-height:100vh;padding:20px}
+h1{color:#00d4ff;font-size:24px;margin-bottom:4px}
+.subtitle{color:#666;margin-bottom:24px;font-size:14px}
+.section{background:#111;border:1px solid #222;border-radius:8px;padding:20px;margin-bottom:16px}
+.section h2{color:#00d4ff;font-size:16px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.method{background:#00d4ff;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}
+label{display:block;font-size:13px;color:#888;margin-bottom:4px;margin-top:12px}
+input,select{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:14px;width:100%;max-width:400px}
 input:focus,select:focus{outline:none;border-color:#00d4ff}
-button{width:100%;background:#00d4ff;color:#000;border:none;padding:10px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;margin-top:12px}
+button{background:#00d4ff;color:#000;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;margin-top:16px}
 button:hover{background:#00b8e6}
 button:disabled{background:#333;color:#666;cursor:not-allowed}
-.ep-list{max-height:300px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-.ep-btn{background:#1a1a1a;border:1px solid #333;color:#e0e0e0;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px;min-width:48px;text-align:center}
-.ep-btn:hover{border-color:#00d4ff;color:#00d4ff}
-.ep-btn.active{background:#00d4ff;color:#000;border-color:#00d4ff}
-.ep-btn.filler{opacity:.5}
-.server-btns{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
-.srv-btn{background:#1a1a1a;border:1px solid #333;color:#888;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px}
-.srv-btn:hover{border-color:#00d4ff;color:#00d4ff}
-.srv-btn.active{background:#00d4ff;color:#000;border-color:#00d4ff}
-.srv-btn.dghg{border-color:#ff8800;color:#ffaa00}
-.srv-btn.dghg.active{background:#ff8800;color:#000}
-.player-area{display:flex;flex-direction:column;background:#000}
-#player-wrap{flex:1;display:flex;align-items:center;justify-content:center;position:relative;min-height:400px}
-#video{width:100%;height:100%;max-height:calc(100vh - 200px)}
-#overlay{position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.9);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:10}
-#overlay.hidden{display:none}
-.overlay-box{background:#111;border:1px solid #222;border-radius:12px;padding:32px;text-align:center;max-width:440px}
-.overlay-box .icon{font-size:48px;margin-bottom:16px}
-.overlay-box .msg{font-size:18px;margin-bottom:8px}
-.overlay-box .sub{font-size:13px;color:#666;line-height:1.5}
-.overlay-box .err{color:#ff4444;font-size:13px;margin-top:12px;line-height:1.5}
-.overlay-btn{background:#00d4ff;color:#000;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;margin-top:16px}
-.overlay-btn:hover{background:#00b8e6}
-.info-bar{background:#111;border-top:1px solid #222;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;font-size:13px}
-.info-bar .server-tag{background:#00d4ff22;color:#00d4ff;padding:2px 10px;border-radius:4px;font-size:11px;font-weight:600}
-.info-bar .server-tag.dghg{background:#ff880022;color:#ffaa00}
-.search-results{max-height:200px;overflow-y:auto;margin-top:8px}
-.search-item{padding:8px;background:#0a0a0a;border-radius:4px;margin-bottom:4px;cursor:pointer;font-size:12px}
-.search-item:hover{background:#222}
-.search-item .title{color:#e0e0e0}
-.search-item .id{color:#666;font-size:11px}
-.thumb{width:100%;border-radius:6px;margin-bottom:8px;aspect-ratio:3/4;object-fit:cover;background:#222}
-.anime-info{font-size:12px;color:#888;margin-top:8px;line-height:1.6}
-.anime-info strong{color:#e0e0e0}
+.result{background:#0d0d0d;border:1px solid #222;border-radius:6px;padding:16px;margin-top:16px;font-family:'Courier New',monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:500px;overflow:auto;line-height:1.5}
+.result:empty{display:none}
+.ok{color:#00ff88}.err{color:#ff4444}.info{color:#ffaa00}
+.url-display{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:8px 12px;font-family:monospace;font-size:12px;color:#888;margin-top:8px;word-break:break-all}
 </style>
 </head>
 <body>
 
-<header>
-  <h1>🎬 Aniwaves Player</h1>
-  <div class="status" title="Server Online"></div>
-  <span style="color:#666;font-size:13px" id="header-status">Ready</span>
-</header>
+<h1>🎬 Aniwaves API</h1>
+<p class="subtitle">Test all endpoints live — <span class="ok">● Server Online</span></p>
 
-<div class="main">
-  <div class="sidebar">
-    <!-- SEARCH -->
-    <div class="section">
-      <label>🔍 Search Anime</label>
-      <input id="searchInput" placeholder="naruto, one piece, jujutsu..." onkeyup="if(event.key==='Enter')searchAnime()">
-      <div class="search-results" id="searchResults"></div>
-    </div>
+<div class="section">
+<h2><span class="method">GET</span> Search Anime</h2>
+<label>Search Query *</label>
+<input id="search-q" placeholder="e.g. naruto, one piece" value="naruto">
+<div class="url-display" id="search-url"></div>
+<button onclick="doSearch()">Search</button>
+<div class="result" id="search-result"></div>
+</div>
 
-    <!-- ANIME INFO -->
-    <div class="section" id="animeInfo" style="display:none">
-      <img class="thumb" id="animeThumb" src="" alt="">
-      <div style="font-size:15px;font-weight:600;color:#e0e0e0" id="animeTitle"></div>
-      <div class="anime-info" id="animeMeta"></div>
-    </div>
+<div class="section">
+<h2><span class="method">GET</span> Anime Details</h2>
+<label>Anime ID *</label>
+<input id="details-id" placeholder="e.g. naruto-76396" value="naruto-76396">
+<div class="url-display" id="details-url"></div>
+<button onclick="doDetails()">Get Details</button>
+<div class="result" id="details-result"></div>
+</div>
 
-    <!-- EPISODES -->
-    <div class="section" id="epSection" style="display:none">
-      <label>📺 Episodes</label>
-      <div style="display:flex;gap:6px;margin-bottom:8px">
-        <select id="typeSelect" style="flex:1" onchange="loadEpisodes()">
-          <option value="sub">Sub</option>
-          <option value="dub">Dub</option>
-        </select>
-        <select id="serverSelect" style="flex:1">
-          <option value="">Auto</option>
-        </select>
-      </div>
-      <div class="ep-list" id="epList"></div>
-    </div>
-  </div>
+<div class="section">
+<h2><span class="method">GET</span> Episodes</h2>
+<label>Anime ID *</label>
+<input id="episodes-id" placeholder="e.g. naruto-76396" value="naruto-76396">
+<div class="url-display" id="episodes-url"></div>
+<button onclick="doEpisodes()">Get Episodes</button>
+<div class="result" id="episodes-result"></div>
+</div>
 
-  <div class="player-area">
-    <div id="player-wrap">
-      <div id="overlay">
-        <div class="overlay-box">
-          <div class="icon" id="ovIcon">🎬</div>
-          <div class="msg" id="ovMsg">Search and select an anime to start watching</div>
-          <div class="sub" id="ovSub">Use the search bar on the left to find anime</div>
-          <div class="err" id="ovErr"></div>
-          <button class="overlay-btn" id="ovBtn" style="display:none"></button>
-        </div>
-      </div>
-      <video id="video" controls playsinline></video>
-    </div>
-    <div class="info-bar">
-      <div id="infoLeft">No video loaded</div>
-      <div id="infoRight"></div>
-    </div>
-  </div>
+<div class="section">
+<h2><span class="method">GET</span> Servers</h2>
+<label>Anime ID *</label>
+<input id="servers-id" placeholder="e.g. naruto-76396" value="naruto-76396">
+<label>Episode Number *</label>
+<input id="servers-ep" type="number" placeholder="e.g. 1" value="1">
+<label>Type</label>
+<select id="servers-type"><option value="sub">sub</option><option value="dub">dub</option><option value="raw">raw</option></select>
+<div class="url-display" id="servers-url"></div>
+<button onclick="doServers()">Get Servers</button>
+<div class="result" id="servers-result"></div>
+</div>
+
+<div class="section">
+<h2><span class="method">GET</span> Stream URL</h2>
+<label>Anime ID *</label>
+<input id="stream-id" placeholder="e.g. naruto-76396" value="naruto-76396">
+<label>Episode Number *</label>
+<input id="stream-ep" type="number" placeholder="e.g. 1" value="1">
+<label>Type</label>
+<select id="stream-type"><option value="sub">sub</option><option value="dub">dub</option></select>
+<label>Server (leave empty for auto)</label>
+<select id="stream-server"><option value="">Auto</option><option value="vidplay">Vidplay</option><option value="byfms">BYFMS</option><option value="dghg">DGHG</option></select>
+<div class="url-display" id="stream-url"></div>
+<button onclick="doStream()">Get Stream</button>
+<div class="result" id="stream-result"></div>
+</div>
+
+<div class="section">
+<h2>🎬 Video Player</h2>
+<label>Anime ID *</label>
+<input id="play-id" placeholder="e.g. naruto-76396" value="naruto-76396">
+<label>Episode Number *</label>
+<input id="play-ep" type="number" placeholder="e.g. 1" value="1">
+<label>Type</label>
+<select id="play-type"><option value="sub">sub</option><option value="dub">dub</option></select>
+<label>Server (leave empty for auto)</label>
+<select id="play-server"><option value="">Auto</option><option value="vidplay">Vidplay</option><option value="byfms">BYFMS</option><option value="dghg">DGHG</option></select>
+<br>
+<button onclick="openPlayer()">▶ Open Player</button>
 </div>
 
 <script>
-const API = 'https://aniwavesapis.onrender.com';
-const WORKER = 'https://dghg-proxy.lk5029716.workers.dev';
+const BASE = 'https://aniwavesapis.onrender.com';
 
-let currentAnime = null;
-let currentEp = null;
-let currentServer = '';
-let hls = null;
-let turnstilePopup = null;
-let pollInterval = null;
-
-// ── UI HELPERS ──
-function setOverlay(icon, msg, sub, err, btnText, btnAction) {
-  document.getElementById('ovIcon').textContent = icon;
-  document.getElementById('ovMsg').textContent = msg;
-  document.getElementById('ovSub').textContent = sub || '';
-  document.getElementById('ovErr').textContent = err || '';
-  const btn = document.getElementById('ovBtn');
-  if (btnText) { btn.textContent = btnText; btn.style.display = 'inline-block'; btn.onclick = btnAction; }
-  else { btn.style.display = 'none'; }
-  document.getElementById('overlay').classList.remove('hidden');
+function showUrl(id,url){document.getElementById(id).textContent=url}
+function showResult(id,data,isErr){
+  const el=document.getElementById(id);
+  el.textContent=typeof data==='string'?data:JSON.stringify(data,null,2);
+  el.className='result '+(isErr?'err':'ok');
 }
-function hideOverlay() { document.getElementById('overlay').classList.add('hidden'); }
-function setHeader(msg) { document.getElementById('header-status').textContent = msg; }
-function setInfo(left, right) {
-  document.getElementById('infoLeft').textContent = left;
-  const r = document.getElementById('infoRight');
-  r.innerHTML = right || '';
+async function fetchAPI(url,resultId){
+  showResult(resultId,'⏳ Loading...',false);
+  try{
+    const r=await fetch(url);
+    const t=await r.text();
+    let d;try{d=JSON.parse(t)}catch{d=t}
+    if(r.ok) showResult(resultId,d,false);
+    else showResult(resultId,'HTTP '+r.status+'\\n'+t,true);
+  }catch(e){showResult(resultId,'Error: '+e.message,true)}
 }
-
-// ── SEARCH ──
-async function searchAnime() {
-  const q = document.getElementById('searchInput').value.trim();
-  if (!q) return;
-  setHeader('Searching...');
-  try {
-    const r = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`);
-    const d = await r.json();
-    const results = d.results || [];
-    const el = document.getElementById('searchResults');
-    if (!results.length) { el.innerHTML = '<div style="color:#666;font-size:12px;padding:8px">No results</div>'; return; }
-    el.innerHTML = results.map(a => `
-      <div class="search-item" onclick="selectAnime('${a.id}')">
-        <div class="title">${a.title}</div>
-        <div class="id">${a.id}</div>
-      </div>
-    `).join('');
-  } catch (e) { setHeader('Search failed'); }
+function buildUrl(path,params){
+  const p=new URLSearchParams();
+  for(const[k,v]of Object.entries(params)){if(v)p.set(k,v)}
+  const q=p.toString();return BASE+path+(q?'?'+q:'');
 }
-
-// ── SELECT ANIME ──
-async function selectAnime(id) {
-  setHeader('Loading info...');
-  try {
-    const [det, eps] = await Promise.all([
-      fetch(`${API}/api/details?id=${id}`).then(r => r.json()),
-      fetch(`${API}/api/episodes?id=${id}`).then(r => r.json())
-    ]);
-    currentAnime = { ...det, episodes: eps.episodes };
-    currentEp = null;
-    currentServer = '';
-
-    // Show info
-    document.getElementById('animeInfo').style.display = 'block';
-    document.getElementById('animeThumb').src = det.poster || '';
-    document.getElementById('animeTitle').textContent = det.title || id;
-    document.getElementById('animeMeta').innerHTML = `
-      ${det.type ? `<strong>Type:</strong> ${det.type}<br>` : ''}
-      ${det.status ? `<strong>Status:</strong> ${det.status}<br>` : ''}
-      ${det.aired ? `<strong>Aired:</strong> ${det.aired}<br>` : ''}
-      ${det.genres?.length ? `<strong>Genres:</strong> ${det.genres.join(', ')}<br>` : ''}
-      <strong>Eps:</strong> ${(eps.episodes || []).length}
-    `;
-
-    loadEpisodes();
-    setHeader(`Loaded: ${det.title}`);
-  } catch (e) { setHeader('Failed to load anime'); }
+function doSearch(){
+  const q=document.getElementById('search-id')?.value||document.getElementById('search-q').value;
+  const url=buildUrl('/api/search',{q});
+  showUrl('search-url',url);fetchAPI(url,'search-result');
 }
-
-// ── LOAD EPISODES ──
-async function loadEpisodes() {
-  if (!currentAnime) return;
-  const type = document.getElementById('typeSelect').value;
-  const eps = currentAnime.episodes || [];
-  const el = document.getElementById('epList');
-  document.getElementById('epSection').style.display = 'block';
-
-  if (!eps.length) {
-    el.innerHTML = '<div style="color:#666;font-size:12px">No episodes found</div>';
-    return;
-  }
-
-  el.innerHTML = eps.map(ep => `
-    <div class="ep-btn ${ep.isFiller ? 'filler' : ''}" onclick="selectEp(${ep.number})" id="ep${ep.number}">
-      ${ep.number}
-    </div>
-  `).join('');
-
-  // Load servers for ep1
-  const ep1 = eps[0];
-  if (ep1) selectEp(ep1.number);
+function doDetails(){
+  const id=document.getElementById('details-id').value;
+  const url=buildUrl('/api/details',{id});
+  showUrl('details-url',url);fetchAPI(url,'details-result');
 }
-
-// ── SELECT EPISODE ──
-async function selectEp(num) {
-  if (!currentAnime) return;
-  currentEp = num;
-
-  // Highlight
-  document.querySelectorAll('.ep-btn').forEach(b => b.classList.remove('active'));
-  const epBtn = document.getElementById('ep' + num);
-  if (epBtn) epBtn.classList.add('active');
-
-  setHeader(`Loading servers for ep ${num}...`);
-
-  const type = document.getElementById('typeSelect').value;
-  try {
-    const r = await fetch(`${API}/api/servers?id=${currentAnime.id}&ep=${num}&type=${type}`);
-    const d = await r.json();
-    const servers = d.servers || [];
-
-    const sel = document.getElementById('serverSelect');
-    sel.innerHTML = '<option value="">Auto</option>' +
-      servers.map(s => `<option value="${s.name.toLowerCase()}">${s.name}</option>`).join('');
-
-    setHeader(`Ep ${num} — ${servers.length} server(s) available`);
-
-    // If last server was DGHG, auto-play
-    if (currentServer) {
-      playStream(currentServer);
-    }
-  } catch (e) { setHeader('Failed to load servers'); }
+function doEpisodes(){
+  const id=document.getElementById('episodes-id').value;
+  const url=buildUrl('/api/episodes',{id});
+  showUrl('episodes-url',url);fetchAPI(url,'episodes-result');
 }
-
-// ── SERVER SELECTION ──
-document.getElementById('serverSelect').addEventListener('change', function () {
-  currentServer = this.value;
-});
-
-// ── PLAY STREAM ──
-async function playStream(forceServer) {
-  if (!currentAnime || !currentEp) return;
-  const server = forceServer || document.getElementById('serverSelect').value;
-  const type = document.getElementById('typeSelect').value;
-
-  // Cleanup previous
-  if (hls) { hls.destroy(); hls = null; }
-  if (pollInterval) clearInterval(pollInterval);
-  if (turnstilePopup && !turnstilePopup.closed) turnstilePopup.close();
-
-  hideOverlay();
-  document.getElementById('video').style.display = 'none';
-  setOverlay('⏳', 'Loading stream...', `Fetching from ${server || 'auto'} server`);
-  setInfo(`${currentAnime.title} — Ep ${currentEp}`);
-
-  try {
-    const params = new URLSearchParams({ id: currentAnime.id, ep: currentEp, type });
-    if (server) params.set('server', server);
-    const resp = await fetch(`${API}/api/stream?${params}`);
-    const data = await resp.json();
-
-    if (data.m3u8) {
-      // Direct stream (Vidplay, BYFMS, etc.)
-      playM3u8(data.m3u8, data._server || 'Unknown', server === 'dghg');
-    } else if (data.type === 'dghg_proxy') {
-      // DGHG needs Turnstile solving
-      solveDghg(data);
-    } else if (data.error) {
-      // Server failed — try auto without specifying server
-      if (server) {
-        setOverlay('⚠️', 'Server failed', data.error, '', 'Try Auto', () => {
-          document.getElementById('serverSelect').value = '';
-          playStream('');
-        });
-      } else {
-        setOverlay('❌', 'All servers failed', data.error || 'No working server found', '', 'Retry', () => playStream(''));
-      }
-    }
-  } catch (e) {
-    setOverlay('❌', 'Failed to fetch stream', e.message, '', 'Retry', () => playStream(server));
-  }
+function doServers(){
+  const id=document.getElementById('servers-id').value;
+  const ep=document.getElementById('servers-ep').value;
+  const type=document.getElementById('servers-type').value;
+  const url=buildUrl('/api/servers',{id,ep,type});
+  showUrl('servers-url',url);fetchAPI(url,'servers-result');
 }
-
-// ── DGHG TURNSTILE FLOW ──
-function solveDghg(data) {
-  setOverlay('🔐', 'DGHG Turnstile Verification', 'Solving Cloudflare challenge...');
-
-  const videoId = data.video_id;
-  const host = data.host;
-  const proxyUrl = data.proxy_url;
-  const resultUrl = `${WORKER}/__dghg_result?id=${encodeURIComponent(videoId)}`;
-
-  // Open popup
-  const w = 520, h = 580;
-  turnstilePopup = window.open(proxyUrl, 'dghg_popup',
-    `width=${w},height=${h},left=${(screen.width - w) / 2},top=${(screen.height - h) / 2}`);
-
-  if (!turnstilePopup) {
-    setOverlay('🔐', 'Popup blocked!', 'Click below to open the Turnstile page manually', '',
-      'Open Turnstile Page', () => {
-        window.open(proxyUrl, 'dghg_popup', `width=${w},height=${h}`);
-        startDghgPoll(resultUrl, videoId, host);
-      });
-    return;
-  }
-
-  startDghgPoll(resultUrl, videoId, host);
+function doStream(){
+  const id=document.getElementById('stream-id').value;
+  const ep=document.getElementById('stream-ep').value;
+  const type=document.getElementById('stream-type').value;
+  const server=document.getElementById('stream-server').value;
+  const params={id,ep,type};
+  if(server)params.server=server;
+  const url=buildUrl('/api/stream',params);
+  showUrl('stream-url',url);fetchAPI(url,'stream-result');
 }
-
-async function startDghgPoll(resultUrl, videoId, host) {
-  let polls = 0;
-  pollInterval = setInterval(async () => {
-    polls++;
-    if (polls > 180) {
-      clearInterval(pollInterval);
-      setOverlay('⏰', 'Timed out', 'Turnstile was not solved in time', '', 'Retry', () => playStream('dghg'));
-      return;
-    }
-    try {
-      const r = await fetch(resultUrl);
-      const d = await r.json();
-      if (d.status === 'done') {
-        clearInterval(pollInterval);
-        setOverlay('📡', 'Getting CDN URL...', 'Almost there...');
-
-        const token = d.passMd5Url.split('/').pop();
-        const cdnResp = await fetch(`${API}/api/dghg/passmd5?url=${encodeURIComponent(d.passMd5Url)}&referer=https://${host}/e/${videoId}`);
-        const cdnData = await cdnResp.json();
-
-        if (cdnData.cdn_url) {
-          const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-          let s = '';
-          for (let i = 0; i < 10; i++) s += chars.charAt(Math.floor(Math.random() * chars.length));
-          const m3u8 = `${cdnData.cdn_url}${s}?token=${token}&expiry=${Date.now()}`;
-          playM3u8(m3u8, 'DGHG', true);
-        } else {
-          setOverlay('❌', 'Failed to get CDN URL', 'Could not extract video URL', '', 'Retry', () => playStream('dghg'));
-        }
-      }
-    } catch (e) { /* keep polling */ }
-  }, 1000);
-}
-
-// ── PLAY M3U8 ──
-function playM3u8(url, serverName, isDghg) {
-  const video = document.getElementById('video');
-  document.getElementById('video').style.display = 'block';
-  hideOverlay();
-  setPlayingInfo(serverName, isDghg);
-
-  if (Hls.isSupported()) {
-    hls = new Hls({ enableWorker: true, lowLatencyMode: true });
-    hls.loadSource(url);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => { }); });
-    hls.on(Hls.Events.ERROR, (e, d) => {
-      if (d.fatal) {
-        setOverlay('❌', 'Playback error', 'Stream failed to load. The link may have expired.', '',
-          'Retry', () => playStream(currentServer));
-      }
-    });
-  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    video.src = url;
-    video.addEventListener('loadedmetadata', () => video.play().catch(() => { }));
-  } else {
-    setOverlay('❌', 'Browser not supported', 'Your browser cannot play HLS streams', '', 'Retry', () => playStream(currentServer));
-  }
-}
-
-function setPlayingInfo(server, isDghg) {
-  const tag = `<span class="server-tag ${isDghg ? 'dghg' : ''}">${server}</span>`;
-  setInfo(`${currentAnime?.title || 'Unknown'} — Ep ${currentEp || '?'} ${tag}`, '');
+function openPlayer(){
+  const id=document.getElementById('play-id').value;
+  const ep=document.getElementById('play-ep').value;
+  const type=document.getElementById('play-type').value;
+  const server=document.getElementById('play-server').value;
+  const params=new URLSearchParams({id,ep,type});
+  if(server)params.set('server',server);
+  window.open(`${BASE}/player?${params}`,'_blank');
 }
 </script>
 </body>
