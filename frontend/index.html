@@ -302,16 +302,59 @@ function showVideo(server){
   $('pTag').innerHTML='<span class="pTag '+(isD?'df':'vp')+'">'+server+'</span>';
 }
 
+function proxyUrl(url, referer){
+  return BASE+'/api/proxy?url='+encodeURIComponent(url)+'&referer='+encodeURIComponent(referer||'https://aniwaves.ru/');
+}
+
 function playHLS(url){
   var v=$('vv');
   if(hls){hls.destroy();hls=null}
+
+  // Extract the CDN host from the m3u8 URL for Referer/Origin headers
+  var cdnRef='https://aniwaves.ru/';
+  try{cdnRef='https://'+new URL(url).hostname+'/'}catch(e){}
+
+  // Route the master manifest through our proxy so CDN sees proper headers
+  var proxyM3u8=proxyUrl(url,cdnRef);
+
   if(window.Hls&&Hls.isSupported()){
-    hls=new Hls({enableWorker:true});
-    hls.loadSource(url);hls.attachMedia(v);
+    // Custom loader: rewrites every sub-manifest + segment URL through the proxy
+    var loader=function(){
+      this.load=function(context,config,callbacks){
+        var contextUrl=context.url;
+        // If already a proxy URL or relative, don't re-proxy
+        if(contextUrl.indexOf(BASE+'/api/proxy')===0||!contextUrl.startsWith('http')){
+          // Use default loader for proxy URLs
+          var DefaultLoader=Hls.DefaultConfig.loader;
+          new DefaultLoader(context,config,callbacks).load();
+          return;
+        }
+        // Rewrite through proxy
+        var prox=proxyUrl(contextUrl,cdnRef);
+        context.url=prox;
+        var DefaultLoader2=Hls.DefaultConfig.loader;
+        new DefaultLoader2(context,config,callbacks).load();
+      };
+      this.destroy=function(){};
+      this.abort=function(){};
+    };
+
+    hls=new Hls({enableWorker:true,fLoader:loader});
+    hls.loadSource(proxyM3u8);
+    hls.attachMedia(v);
     hls.on(Hls.Events.MANIFEST_PARSED,function(){v.play().catch(function(){})});
-    hls.on(Hls.Events.ERROR,function(e,d){if(d.fatal){setOverlay('❌','Playback error');hls.destroy();hls=null}});
-  }else if(v.canPlayType('application/vnd.apple.mpegurl')){
-    v.src=url;v.onloadedmetadata=function(){v.play().catch(function(){})};
+    hls.on(Hls.Events.ERROR,function(e,d){
+      if(d.fatal){
+        // Retry with a fresh proxy URL (bust any cache)
+        var freshUrl=proxyUrl(url+'+(Date.now()),cdnRef);
+        setOverlay('❌','Playback error — retrying...');
+        setTimeout(function(){playHLS(url)},1500);
+      }
+    });
+  }else if(v.canPlayType('application/vnd.apple-mpegurl')){
+    // Safari native HLS — use proxy URL
+    v.src=proxyM3u8;
+    v.onloadedmetadata=function(){v.play().catch(function(){})};
   }else{
     setOverlay('❌','HLS not supported');
   }
