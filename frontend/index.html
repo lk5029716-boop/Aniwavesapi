@@ -248,26 +248,45 @@ var pollIv=null, hls=null;
 function $(id){return document.getElementById(id)}
 
 function showResp(prefix, url, data, isErr){
-  $(prefix+'_url').textContent=url;
-  $(prefix+'_url').href=url;
-  $(prefix+'_resp_box').style.display='block';
-  $(prefix+'_resp').textContent=typeof data==='string'?data:JSON.stringify(data,null,2);
-  $(prefix+'_resp').className='response-body'+(isErr?' err':'');
+  var urlEl = document.getElementById(prefix+'_url');
+  var boxEl = document.getElementById(prefix+'_resp_box');
+  var respEl = document.getElementById(prefix+'_resp');
+  if(!boxEl){
+    console.error('showResp: no element with id', prefix+'_resp_box');
+    alert('Error: response container not found for '+prefix);
+    return;
+  }
+  if(urlEl){
+    urlEl.textContent = url;
+    urlEl.href = url;
+  }
+  boxEl.style.display = 'block';
+  respEl.textContent = typeof data==='string' ? data : JSON.stringify(data,null,2);
+  respEl.className = 'response-body' + (isErr ? ' err' : '');
+  console.log('showResp', prefix, 'done, url:', url.substring(0,80));
 }
 
 function fetchEp(path, params, prefix){
-  var qs=new URLSearchParams();
-  Object.keys(params).forEach(function(k){if(params[k]!==''&&params[k]!==null&&params[k]!==undefined)qs.set(k,params[k])});
-  var url=BASE+path+'?'+qs;
-  var t0=Date.now();
-  fetch(url).then(function(r){
-    return r.text().then(function(t){
-      var d;try{d=JSON.parse(t)}catch(e){d=t}
-      showResp(prefix, url+' ('+(Date.now()-t0)+'ms)', d, !!d.error);
+  var qs = new URLSearchParams();
+  Object.keys(params).forEach(function(k){
+    if(params[k]!=='' && params[k]!==null && params[k]!==undefined) qs.set(k, params[k]);
+  });
+  var url = BASE + path + '?' + qs;
+  var t0 = Date.now();
+  console.log('fetchEp', prefix, 'fetching', url);
+  fetch(url)
+    .then(function(r){
+      console.log('fetchEp', prefix, 'response status', r.status);
+      return r.text().then(function(t){
+        var d;
+        try { d = JSON.parse(t); } catch(e) { d = t; }
+        showResp(prefix, url+' ('+(Date.now()-t0)+'ms)', d, !!d.error);
+      });
     })
-  }).catch(function(e){
-    showResp(prefix, url, 'Error: '+e.message, true);
-  })
+    .catch(function(e){
+      console.error('fetchEp', prefix, 'error:', e.message);
+      showResp(prefix, url, 'Error: '+e.message, true);
+    });
 }
 
 function doSearch(){fetchEp('/api/search',{q:$('s_q').value.trim()},'s')}
