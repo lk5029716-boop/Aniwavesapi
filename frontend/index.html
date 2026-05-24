@@ -235,6 +235,13 @@ select{appearance:auto;cursor:pointer}
       </div>
       <video id="vv" controls playsinline></video>
     </div>
+    <div id="dghgOverlay" style="display:none;position:fixed;inset:0;background:#000;z-index:100;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#111;font-size:13px;font-family:sans-serif;color:#fff">
+        <span id="dghgStatus">DGHG Player</span>
+        <button onclick="closeDGHGPlayer()" style="background:#333;color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px">✕ Close</button>
+      </div>
+      <iframe id="dghgFrame" style="flex:1;border:none;width:100%" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>
+    </div>
     <div id="pBar">
       <span id="pInfo"></span>
       <span id="pTag"></span>
@@ -435,17 +442,37 @@ function tryNextServer(servers,idx,epId,type){
     .then(function(d){
       console.log('stream response for', srv.name, ':', d);
       if(d.m3u8){showVideo(srv.name);playHLS(d.m3u8)}
+      else if(d.type==='dghg_proxy'){
+        // DGHG: show inline iframe with Worker proxy page
+        showDGHGPlayer(d);
+      }
       else if(d.error){tryNextServer(servers,idx+1,epId,type)}
       else{tryNextServer(servers,idx+1,epId,type);}
+    })
     })
     .catch(function(e){console.error('stream fetch error:', e); tryNextServer(servers,idx+1,epId,type)});
 }
 
-function doStop(){
-  if(pollIv)clearInterval(pollIv);
-  if(hls){hls.destroy();hls=null}
-  var v=$('vv');v.pause();v.src='';
-  setOverlay('▶️','Stopped — select server and click Play');
+function showDGHGPlayer(d){
+  var ov=$('dghgOverlay');
+  var fr=$('dghgFrame');
+  var st=$('dghgStatus');
+  st.textContent='DGHG — Loading player...';
+  ov.style.display='flex';
+  fr.src=d.url;
+  // Hide the regular player overlay
+  $('pOverlay').classList.add('hidden');
+  $('pBar').style.display='flex';
+  $('pInfo').textContent='DGHG (inline player)';
+  $('pTag').innerHTML='<span class="pTag df">DGHG</span>';
+}
+
+function closeDGHGPlayer(){
+  $('dghgFrame').src='';
+  $('dghgOverlay').style.display='none';
+  $('pOverlay').classList.remove('hidden');
+  $('pBar').style.display='none';
+  setOverlay('▶️','Closed — select server and click Play');
 }
 </script>
 </body>
