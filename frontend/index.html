@@ -366,7 +366,7 @@ function playHLS(url){
     hls.on(Hls.Events.ERROR,function(e,d){
       if(d.fatal){
         // Retry with a fresh proxy URL (bust any cache)
-        var freshUrl=proxyUrl(url+'+(Date.now()),cdnRef);
+        var freshUrl=proxyUrl(url+'?t='+Date.now(),cdnRef);
         setOverlay('❌','Playback error — retrying...');
         setTimeout(function(){playHLS(url)},1500);
       }
