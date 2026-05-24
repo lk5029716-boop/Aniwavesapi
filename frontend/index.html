@@ -219,19 +219,18 @@ select{appearance:auto;cursor:pointer}
       </div>
       <div>
         <label>Server</label>
-        <select id="p_server"><option value="">Auto (try all)</option></select>
+        <select id="p_server"><option value="">Select server</option></select>
       </div>
     </div>
     <div id="dgNote" class="dg-note" style="display:none">⚠️ DGHG requires Cloudflare Turnstile — a popup will open, solve it and the stream auto-plays.</div>
     <div class="try-row">
-      <button class="btn" onclick="loadServers()">🔄 Load Servers</button>
       <button class="btn" onclick="doPlay()">▶ Play</button>
       <button class="btn dark" onclick="doStop()">■ Stop</button>
     </div>
     <div id="playerWrap">
       <div id="pOverlay">
         <div class="big" id="pIc">▶️</div>
-        <div class="txt" id="pMsg">Enter details and click Play</div>
+        <div class="txt" id="pMsg">Select server and click Play</div>
         <div class="sub" id="pSub">Vidplay &amp; BYFMS play instantly. DGHG needs Turnstile.</div>
         <div class="pErr" id="pErr"></div>
       </div>
@@ -387,9 +386,13 @@ function doPlay(){
   var id=$('p_id').value.trim(),ep=$('p_ep').value,type=$('p_type').value;
   var srv=$('p_server').value;
   if(!id){setOverlay('❌','Enter an anime ID');return}
-  if(!srv){setOverlay('❌','Select a server first');return}
   if(pollIv)clearInterval(pollIv);
   var epId=id+'-ep-'+ep;
+
+  // If no server selected, load servers first
+  if(!srv){loadServers();return}
+
+  // Server selected, play it
   setOverlay('⏳','Loading...','Fetching stream from '+srv);
   fetch(BASE+'/api/servers?episodeId='+encodeURIComponent(epId)+'&type='+type)
     .then(function(r){return r.json()})
