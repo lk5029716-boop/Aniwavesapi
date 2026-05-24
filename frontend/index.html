@@ -362,19 +362,33 @@ function playHLS(url){
 
 function doPlay(){
   var id=$('p_id').value.trim(),ep=$('p_ep').value,type=$('p_type').value;
+  // Save selected server BEFORE we rebuild the dropdown
   var selectedServer=$('p_server').value;
   console.log('doPlay:', id, ep, type, 'server:', selectedServer);
   if(!id){setOverlay('❌','Enter an anime ID');return}
   if(pollIv)clearInterval(pollIv);
-  setOverlay('⏳','Loading...','Fetching servers');
   var epId=id+'-ep-'+ep;
+
+  // If we already have a selected server from dropdown, stream directly
+  if(selectedServer && window._lastServers){
+    var match=window._lastServers.filter(function(s){return s.name.toLowerCase()===selectedServer.toLowerCase()});
+    if(match.length){
+      setOverlay('⏳','Loading...','Fetching stream from '+selectedServer);
+      tryNextServer(match,0,epId,type);
+      return;
+    }
+  }
+
+  // Otherwise fetch servers first
+  setOverlay('⏳','Loading...','Fetching servers');
   fetch(BASE+'/api/servers?episodeId='+encodeURIComponent(epId)+'&type='+type)
     .then(function(r){return r.json()})
     .then(function(sd){
       console.log('servers response:', sd);
       if(!sd.servers||!sd.servers.length){setOverlay('❌','No servers found');return}
+      window._lastServers=sd.servers;
 
-      // Populate server dropdown — no auto option, pick one
+      // Populate server dropdown
       var sel=$('p_server');
       sel.innerHTML='';
       sd.servers.forEach(function(s){
@@ -383,14 +397,18 @@ function doPlay(){
         sel.appendChild(o);
       });
 
-      // Use selected server
+      // Re-select the previously selected option
       if(selectedServer){
-        var match=sd.servers.filter(function(s){return s.name.toLowerCase()===selectedServer.toLowerCase()});
-        if(match.length){tryNextServer(match,0,epId,type);return}
-        // Selected server not in list, default to first
+        for(var i=0;i<sel.options.length;i++){
+          if(sel.options[i].value.toLowerCase()===selectedServer.toLowerCase()){sel.selectedIndex=i;break}
+        }
       }
-      // Default: use first server
-      tryNextServer([sd.servers[0]],0,epId,type);
+
+      // Use selected server, or first if nothing selected
+      var useServer=selectedServer||sd.servers[0].name;
+      var match=sd.servers.filter(function(s){return s.name.toLowerCase()===useServer.toLowerCase()});
+      if(!match.length){match=[sd.servers[0]];}
+      tryNextServer(match,0,epId,type);
     })
     .catch(function(e){setOverlay('❌','Server lookup failed: '+e.message)});
 }
