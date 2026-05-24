@@ -389,10 +389,29 @@ function doPlay(){
   if(pollIv)clearInterval(pollIv);
   var epId=id+'-ep-'+ep;
 
-  // If no server selected, load servers first
-  if(!srv){loadServers();return}
+  // If no server selected, load servers then auto-play first one
+  if(!srv){
+    setOverlay('⏳','Loading...','Fetching servers');
+    fetch(BASE+'/api/servers?episodeId='+encodeURIComponent(epId)+'&type='+type)
+      .then(function(r){return r.json()})
+      .then(function(sd){
+        if(!sd.servers||!sd.servers.length){setOverlay('❌','No servers found');return}
+        var sel=$('p_server');
+        sel.innerHTML='';
+        sd.servers.forEach(function(s){
+          var o=document.createElement('option');
+          o.value=s.name; o.textContent=s.name;
+          sel.appendChild(o);
+        });
+        sel.selectedIndex=0;
+        // Auto-play first server
+        doPlay();
+      })
+      .catch(function(e){setOverlay('❌','Failed: '+e.message)});
+    return;
+  }
 
-  // Server selected, play it
+  // Server selected, stream it
   setOverlay('⏳','Loading...','Fetching stream from '+srv);
   fetch(BASE+'/api/servers?episodeId='+encodeURIComponent(epId)+'&type='+type)
     .then(function(r){return r.json()})
