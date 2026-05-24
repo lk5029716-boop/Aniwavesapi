@@ -49,7 +49,6 @@ function extractKeyAndDecrypt(
 }
 
 function extractKeyFromScript(scriptContent: string): string | null {
-  // Pattern: var key = "..." or const key = "..."
   const patterns = [
     /(?:var|let|const)\s+key\s*=\s*['"]([^'"]{8,})['"]/,
     /key\s*:\s*['"]([^'"]{8,})['"]/,
@@ -64,13 +63,11 @@ function extractKeyFromScript(scriptContent: string): string | null {
 }
 
 export async function extractMegacloud(
-  embedUrl: string,
-  proxyUrl?: string | null
+  embedUrl: string
 ): Promise<StreamSource | null> {
   const urlObj = new URL(embedUrl);
   const host = urlObj.hostname;
 
-  // Extract sourceId from URL
   const pathParts = urlObj.pathname.split("/").filter(Boolean);
   const sourceId = pathParts[pathParts.length - 1];
 
@@ -79,7 +76,7 @@ export async function extractMegacloud(
     return null;
   }
 
-  logger.info({ embedUrl, host, sourceId, proxy: proxyUrl != null }, "[MegaCloud Stage 1] fetching embed page");
+  logger.info({ embedUrl, host, sourceId }, "[MegaCloud Stage 1] fetching embed page");
 
   let embedHtml = "";
   let scriptKey: string | null = null;
@@ -113,8 +110,6 @@ export async function extractMegacloud(
     logger.warn({ error: e.message }, "[MegaCloud Stage 1] embed page fetch failed, continuing");
   }
 
-  // Determine the correct getSources endpoint
-  // MegaCloud / RapidCloud use different path prefixes
   const endpointMap: Record<string, string> = {
     "megacloud.tv": "/embed-2/ajax/e-1/getSources",
     "rapid-cloud.co": "/embed-6/ajax/e-1/getSources",
@@ -169,7 +164,6 @@ export async function extractMegacloud(
     return null;
   }
 
-  // ── Stage 3: decrypt if needed ────────────────────────────────────────────
   logger.info("[MegaCloud Stage 3] decryption check");
 
   let sourcesArr: unknown[] = [];

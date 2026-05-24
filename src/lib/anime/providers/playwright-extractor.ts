@@ -76,10 +76,10 @@ export async function extractViaPlaywright(
     "[Playwright] launching headless Chromium (Byse CDN extractor)"
   );
 
-  let browser: import("playwright").Browser | null = null;
+  let browser: import("playwright-core").Browser | null = null;
 
   try {
-    const { chromium } = await import("playwright");
+    const { chromium } = await import("playwright-core");
 
     browser = await chromium.launch({
       headless: true,

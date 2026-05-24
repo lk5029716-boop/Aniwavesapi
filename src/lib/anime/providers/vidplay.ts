@@ -24,11 +24,6 @@ const VIDPLAY_HOSTS = [
 
 const MEGACLOUD_HOSTS = ["megacloud.tv", "rapid-cloud.co", "rabbitstream.net"];
 
-/**
- * Keys used to RC4-decode the mediainfo ID.
- * These rotate periodically. We attempt to fetch the latest from
- * consumet's public key repo first, then fall back to hardcoded.
- */
 const FALLBACK_KEYS = [
   [8, 0],
   [6, 2],
@@ -82,13 +77,12 @@ function aesDecrypt(ciphertext: string, key: string): string {
 }
 
 export async function extractVidplay(
-  embedUrl: string,
-  proxyUrl?: string | null
+  embedUrl: string
 ): Promise<StreamSource | null> {
   const urlObj = new URL(embedUrl);
   const host = urlObj.hostname;
 
-  logger.info({ embedUrl, host, proxy: proxyUrl != null }, "[Stage 1] fetching embed page");
+  logger.info({ embedUrl, host }, "[Stage 1] fetching embed page");
 
   let embedHtml: string;
   try {
@@ -114,8 +108,6 @@ export async function extractVidplay(
 
   const $ = cheerio.load(embedHtml);
 
-  // Extract the encrypted source path and ID from the page
-  // Pattern: getSources({id: "...", type: "..."}), or window.sources = ...
   let rawId: string | null = null;
   let sourcesPath: string | null = null;
 
@@ -124,7 +116,6 @@ export async function extractVidplay(
     .get()
     .join("\n");
 
-  // Try multiple patterns
   const idPatterns = [
     /getSources\s*\(\s*\{[^}]*id\s*:\s*['"]([^'"]+)['"]/,
     /var\s+id\s*=\s*['"]([^'"]+)['"]/,
@@ -140,7 +131,6 @@ export async function extractVidplay(
     }
   }
 
-  // Try getting sources URL
   const pathPatterns = [
     /getSources\s*\(\s*\{[^}]*url\s*:\s*['"]([^'"]+)['"]/,
     /sourcesUrl\s*=\s*['"]([^'"]+)['"]/,
@@ -154,7 +144,6 @@ export async function extractVidplay(
     }
   }
 
-  // Fallback: extract ID from URL path
   if (!rawId) {
     const pathParts = urlObj.pathname.split("/").filter(Boolean);
     rawId = pathParts[pathParts.length - 1] ?? null;
@@ -167,7 +156,6 @@ export async function extractVidplay(
     return null;
   }
 
-  // ── Stage 2: fetch futoken / keys ────────────────────────────────────────
   logger.info({ host }, "[Stage 2] fetching futoken keys");
 
   const keys = await fetchVidplayKeys();
@@ -180,14 +168,12 @@ export async function extractVidplay(
     "[Stage 2] token generated"
   );
 
-  // ── Stage 3: call sources / mediainfo endpoint ────────────────────────────
   const mediaInfoUrl = sourcesPath
     ? `https://${host}${sourcesPath}`
     : `https://${host}/mediainfo/${encodedId}`;
 
   const mediaInfoParams: Record<string, string> = { t: token };
 
-  // Some vidplay variants use ?v= timestamp
   if (urlObj.searchParams.get("t")) {
     mediaInfoParams["autoplay"] = "1";
   }
@@ -230,7 +216,6 @@ export async function extractVidplay(
     return null;
   }
 
-  // ── Stage 4: parse response ────────────────────────────────────────────────
   logger.info("[Stage 4] parsing source API response");
 
   let parsed: Record<string, unknown>;
@@ -238,7 +223,6 @@ export async function extractVidplay(
     parsed = JSON.parse(rawBody) as Record<string, unknown>;
   } catch {
     logger.warn({ snippet: rawBody.slice(0, 100) }, "[Stage 4] response is not JSON, may be encrypted");
-    // treat as encrypted string
     parsed = { encrypted: true, sources: rawBody };
   }
 
@@ -247,7 +231,6 @@ export async function extractVidplay(
     "[Stage 4] raw response structure"
   );
 
-  // ── Stage 5: decrypt if needed ────────────────────────────────────────────
   logger.info("[Stage 5] decryption stage");
 
   let sourcesData: unknown = parsed["sources"];
@@ -257,7 +240,6 @@ export async function extractVidplay(
   if (isEncrypted && typeof sourcesData === "string") {
     logger.debug({ encrypted: true }, "[Stage 5] sources appear AES-encrypted");
 
-    // Try known decryption keys (sourced from active extractors)
     const decryptionKeys = [
       "9Y6I6HiQOqjDUlbAEWtFhg==",
       "WXrUARXb1aDLaZjI",
@@ -280,7 +262,6 @@ export async function extractVidplay(
     }
 
     if (!decrypted) {
-      // Attempt without padding / base64 variations
       try {
         const keyBytes = CryptoJS.MD5(rawId).toString();
         const result = aesDecrypt(sourcesData, keyBytes);
@@ -308,7 +289,6 @@ export async function extractVidplay(
     logger.debug("[Stage 5] sources not encrypted, skipping decryption");
   }
 
-  // ── Stage 6: parse source list ────────────────────────────────────────────
   logger.info("[Stage 6] parsing source list");
 
   const sourcesArr = Array.isArray(sourcesData)
@@ -351,7 +331,6 @@ export async function extractVidplay(
   const intro = (parsed["intro"] as SkipTime) ?? null;
   const outro = (parsed["outro"] as SkipTime) ?? null;
 
-  // ── Stage 7: pick best m3u8 ────────────────────────────────────────────────
   logger.info("[Stage 7] selecting final m3u8");
 
   interface SourceEntry {
