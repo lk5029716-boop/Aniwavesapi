@@ -224,6 +224,7 @@ select{appearance:auto;cursor:pointer}
     </div>
     <div id="dgNote" class="dg-note" style="display:none">⚠️ DGHG requires Cloudflare Turnstile — a popup will open, solve it and the stream auto-plays.</div>
     <div class="try-row">
+      <button class="btn" onclick="loadServers()">🔄 Load Servers</button>
       <button class="btn" onclick="doPlay()">▶ Play</button>
       <button class="btn dark" onclick="doStop()">■ Stop</button>
     </div>
@@ -360,35 +361,15 @@ function playHLS(url){
   }
 }
 
-function doPlay(){
+function loadServers(){
   var id=$('p_id').value.trim(),ep=$('p_ep').value,type=$('p_type').value;
-  // Save selected server BEFORE we rebuild the dropdown
-  var selectedServer=$('p_server').value;
-  console.log('doPlay:', id, ep, type, 'server:', selectedServer);
-  if(!id){setOverlay('❌','Enter an anime ID');return}
-  if(pollIv)clearInterval(pollIv);
+  if(!id)return;
   var epId=id+'-ep-'+ep;
-
-  // If we already have a selected server from dropdown, stream directly
-  if(selectedServer && window._lastServers){
-    var match=window._lastServers.filter(function(s){return s.name.toLowerCase()===selectedServer.toLowerCase()});
-    if(match.length){
-      setOverlay('⏳','Loading...','Fetching stream from '+selectedServer);
-      tryNextServer(match,0,epId,type);
-      return;
-    }
-  }
-
-  // Otherwise fetch servers first
   setOverlay('⏳','Loading...','Fetching servers');
   fetch(BASE+'/api/servers?episodeId='+encodeURIComponent(epId)+'&type='+type)
     .then(function(r){return r.json()})
     .then(function(sd){
-      console.log('servers response:', sd);
       if(!sd.servers||!sd.servers.length){setOverlay('❌','No servers found');return}
-      window._lastServers=sd.servers;
-
-      // Populate server dropdown
       var sel=$('p_server');
       sel.innerHTML='';
       sd.servers.forEach(function(s){
@@ -396,18 +377,26 @@ function doPlay(){
         o.value=s.name; o.textContent=s.name;
         sel.appendChild(o);
       });
+      sel.selectedIndex=0;
+      setOverlay('▶️','Select a server and click Play');
+    })
+    .catch(function(e){setOverlay('❌','Failed: '+e.message)});
+}
 
-      // Re-select the previously selected option
-      if(selectedServer){
-        for(var i=0;i<sel.options.length;i++){
-          if(sel.options[i].value.toLowerCase()===selectedServer.toLowerCase()){sel.selectedIndex=i;break}
-        }
-      }
-
-      // Use selected server, or first if nothing selected
-      var useServer=selectedServer||sd.servers[0].name;
-      var match=sd.servers.filter(function(s){return s.name.toLowerCase()===useServer.toLowerCase()});
-      if(!match.length){match=[sd.servers[0]];}
+function doPlay(){
+  var id=$('p_id').value.trim(),ep=$('p_ep').value,type=$('p_type').value;
+  var srv=$('p_server').value;
+  if(!id){setOverlay('❌','Enter an anime ID');return}
+  if(!srv){setOverlay('❌','Select a server first');return}
+  if(pollIv)clearInterval(pollIv);
+  var epId=id+'-ep-'+ep;
+  setOverlay('⏳','Loading...','Fetching stream from '+srv);
+  fetch(BASE+'/api/servers?episodeId='+encodeURIComponent(epId)+'&type='+type)
+    .then(function(r){return r.json()})
+    .then(function(sd){
+      if(!sd.servers||!sd.servers.length){setOverlay('❌','No servers found');return}
+      var match=sd.servers.filter(function(s){return s.name.toLowerCase()===srv.toLowerCase()});
+      if(!match.length){setOverlay('❌','Server "'+srv+'" not found');return}
       tryNextServer(match,0,epId,type);
     })
     .catch(function(e){setOverlay('❌','Server lookup failed: '+e.message)});
