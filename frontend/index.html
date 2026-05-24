@@ -330,50 +330,24 @@ function playHLS(url){
   var v=$('vv');
   if(hls){hls.destroy();hls=null}
 
-  // Extract the CDN host from the m3u8 URL for Referer/Origin headers
-  var cdnRef='https://aniwaves.ru/';
-  try{cdnRef='https://'+new URL(url).hostname+'/'}catch(e){}
-
-  // Route the master manifest through our proxy so CDN sees proper headers
-  var proxyM3u8=proxyUrl(url,cdnRef);
+  console.log('playHLS called with:', url);
 
   if(window.Hls&&Hls.isSupported()){
-    // Custom loader: rewrites every sub-manifest + segment URL through the proxy
-    var loader=function(){
-      this.load=function(context,config,callbacks){
-        var contextUrl=context.url;
-        // If already a proxy URL or relative, don't re-proxy
-        if(contextUrl.indexOf(BASE+'/api/proxy')===0||!contextUrl.startsWith('http')){
-          // Use default loader for proxy URLs
-          var DefaultLoader=Hls.DefaultConfig.loader;
-          new DefaultLoader(context,config,callbacks).load();
-          return;
-        }
-        // Rewrite through proxy
-        var prox=proxyUrl(contextUrl,cdnRef);
-        context.url=prox;
-        var DefaultLoader2=Hls.DefaultConfig.loader;
-        new DefaultLoader2(context,config,callbacks).load();
-      };
-      this.destroy=function(){};
-      this.abort=function(){};
-    };
-
-    hls=new Hls({enableWorker:true,fLoader:loader});
-    hls.loadSource(proxyM3u8);
+    hls=new Hls({enableWorker:true});
+    hls.loadSource(url);
     hls.attachMedia(v);
-    hls.on(Hls.Events.MANIFEST_PARSED,function(){v.play().catch(function(){})});
+    hls.on(Hls.Events.MANIFEST_PARSED,function(){
+      console.log('HLS manifest parsed, playing...');
+      v.play().catch(function(e){console.log('play() rejected:',e.message)});
+    });
     hls.on(Hls.Events.ERROR,function(e,d){
+      console.error('HLS error:', d.type, d.details, 'fatal:', d.fatal);
       if(d.fatal){
-        // Retry with a fresh proxy URL (bust any cache)
-        var freshUrl=proxyUrl(url+'?t='+Date.now(),cdnRef);
-        setOverlay('❌','Playback error — retrying...');
-        setTimeout(function(){playHLS(url)},1500);
+        setOverlay('❌','Playback error: '+d.details);
       }
     });
   }else if(v.canPlayType('application/vnd.apple-mpegurl')){
-    // Safari native HLS — use proxy URL
-    v.src=proxyM3u8;
+    v.src=url;
     v.onloadedmetadata=function(){v.play().catch(function(){})};
   }else{
     setOverlay('❌','HLS not supported');
@@ -382,19 +356,18 @@ function playHLS(url){
 
 function doPlay(){
   var id=$('p_id').value.trim(),ep=$('p_ep').value,type=$('p_type').value;
+  console.log('doPlay:', id, ep, type);
   if(!id){setOverlay('❌','Enter an anime ID');return}
   if(pollIv)clearInterval(pollIv);
   setOverlay('⏳','Loading...','Fetching servers');
-  // Get server list first
   var epId=id+'-ep-'+ep;
   fetch(BASE+'/api/servers?episodeId='+encodeURIComponent(epId)+'&type='+type)
     .then(function(r){return r.json()})
     .then(function(sd){
+      console.log('servers response:', sd);
       if(!sd.servers||!sd.servers.length){setOverlay('❌','No servers found');return}
-      // Remove DGHG from auto-try (needs Turnstile)
       var autoServers=sd.servers.filter(function(s){return !s.name.toLowerCase().includes('dghg')});
-      if(!autoServers.length){autoServers=sd.servers;} // fallback if only DGHG
-      // Try each server via serverId fast path
+      if(!autoServers.length){autoServers=sd.servers;}
       tryNextServer(autoServers,0,epId,type);
     })
     .catch(function(e){setOverlay('❌','Server lookup failed: '+e.message)});
@@ -403,20 +376,21 @@ function doPlay(){
 function tryNextServer(servers,idx,epId,type){
   if(idx>=servers.length){setOverlay('❌','All servers failed');return}
   var srv=servers[idx];
+  console.log('tryNextServer['+idx+']:', srv.name, srv.id.substring(0,40)+'...');
   setOverlay('⏳','Trying '+srv.name+'...','Server '+(idx+1)+' of '+servers.length);
   fetch(BASE+'/api/stream?serverId='+encodeURIComponent(srv.id))
     .then(function(r){return r.json()})
     .then(function(d){
+      console.log('stream response for', srv.name, ':', d);
       if(d.m3u8){showVideo(srv.name);playHLS(d.m3u8)}
       else if(d.type==='dghg_proxy'){
-        // DGHG needs Turnstile — show note and open popup
         $('dgNote').style.display='none';
         doDGHG(d);
       }
       else if(d.error){tryNextServer(servers,idx+1,epId,type)}
       else{tryNextServer(servers,idx+1,epId,type);}
     })
-    .catch(function(){tryNextServer(servers,idx+1,epId,type)});
+    .catch(function(e){console.error('stream fetch error:', e); tryNextServer(servers,idx+1,epId,type)});
 }
 
 function doStop(){
