@@ -185,35 +185,8 @@ select{appearance:auto;cursor:pointer}
   <div class="ep-body">
     <div class="params">
       <div class="full">
-        <label>serverId (from /api/servers — fastest)</label>
-        <input id="st_sid" placeholder="Paste server ID here for direct extraction">
-      </div>
-      <div style="text-align:center;color:#666;font-size:12px;margin:4px 0">— OR use episode + server name —</div>
-      <div>
-        <label>Episode ID (episodeId)</label>
-        <input id="st_eid" value="naruto-76396-ep-1" placeholder="animeId-ep-N">
-      </div>
-      <div>
-        <label>Type</label>
-        <select id="st_type"><option value="sub">sub</option><option value="dub">dub</option></select>
-      </div>
-      <div>
-        <label>Server</label>
-        <select id="st_srv">
-          <option value="">Auto</option>
-          <option value="vidplay">Vidplay</option>
-          <option value="byfms">BYFMS</option>
-          <option value="dghg">DGHG</option>
-        </select>
-      </div>
-      <div></div>
-      <div>
-        <label>Legacy: Anime ID (id)</label>
-        <input id="st_id" value="naruto-76396" placeholder="anime-id">
-      </div>
-      <div>
-        <label>Legacy: Episode (ep)</label>
-        <input id="st_ep" type="number" value="1">
+        <label>serverId (from /api/servers)</label>
+        <input id="st_sid" placeholder="Paste server ID here">
       </div>
     </div>
     <div class="try-row">
@@ -305,13 +278,9 @@ function doServers(){
   else{fetchEp('/api/servers',{id:id,ep:ep,type:type},'sr')}
 }
 function doStream(){
-  var sid=$('st_sid').value.trim(),eid=$('st_eid').value.trim(),type=$('st_type').value,s=$('st_srv').value;
-  var id=$('st_id').value.trim(),ep=$('st_ep').value;
-  // Priority: serverId > episodeId > legacy id+ep
+  var sid=$('st_sid').value.trim();
   if(sid){fetchEp('/api/stream',{serverId:sid},'st');return}
-  if(eid){var p={episodeId:eid,type:type};if(s)p.server=s;fetchEp('/api/stream',p,'st');return}
-  if(id&&ep){fetchEp('/api/stream',{id:id,ep:ep,type:type,server:s},'st');return}
-  showResp('st','','Provide serverId or episodeId or id+ep',true);
+  showResp('st','','Provide a serverId',true);
 }
 
 /* Player */
