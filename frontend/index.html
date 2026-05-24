@@ -449,7 +449,6 @@ function tryNextServer(servers,idx,epId,type){
       else if(d.error){tryNextServer(servers,idx+1,epId,type)}
       else{tryNextServer(servers,idx+1,epId,type);}
     })
-    })
     .catch(function(e){console.error('stream fetch error:', e); tryNextServer(servers,idx+1,epId,type)});
 }
 
