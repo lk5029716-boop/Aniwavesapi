@@ -336,6 +336,47 @@ var init_scraper = __esm({
   }
 });
 
+// src/lib/anime/providers/dghg.ts
+var dghg_exports = {};
+__export(dghg_exports, {
+  extractDghg: () => extractDghg,
+  isPlaymogoHost: () => isPlaymogoHost
+});
+function isPlaymogoHost(url) {
+  try {
+    const host = new URL(url).hostname;
+    return DOOD_HOSTS.some((h) => host.includes(h));
+  } catch {
+    return false;
+  }
+}
+async function extractDghg(embedUrl, _skipData, _proxyUrl) {
+  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] returning null \u2014 frontend will handle via direct embed");
+  return null;
+}
+var DOOD_HOSTS;
+var init_dghg = __esm({
+  "src/lib/anime/providers/dghg.ts"() {
+    init_logger();
+    DOOD_HOSTS = [
+      "playmogo.com",
+      "myvidplay.com",
+      "doodstream.com",
+      "dood.la",
+      "dood.to",
+      "dood.so",
+      "dood.ws",
+      "dood.pm",
+      "dood.wf",
+      "dood.re",
+      "dood.yt",
+      "dood.cx",
+      "dood.sh",
+      "dood.watch"
+    ];
+  }
+});
+
 // src/app.ts
 import express from "express";
 import cors from "cors";
@@ -1301,6 +1342,7 @@ function isWeneverbeenfreeHost(url) {
 }
 
 // src/lib/anime/providers/index.ts
+init_dghg();
 var VIDPLAY_LIKE_HOSTS = [
   "vidplay.online",
   "vidplay.lol",
@@ -1340,6 +1382,10 @@ async function extractStream(embedUrl, serverName, skipData, proxyUrl) {
   if (matchHost(embedUrl, ECHOVIDEO_LIKE_HOSTS) || isEchovideoHost(embedUrl)) {
     logger.info({ serverName }, "routing to Echovideo extractor");
     return extractEchovideo(embedUrl, skipData);
+  }
+  if (lowerName.includes("dghg") || isPlaymogoHost(embedUrl)) {
+    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to DGHG client-side proxy extractor");
+    return extractDghg(embedUrl, skipData, proxyUrl);
   }
   if (matchHost(embedUrl, WNBF_LIKE_HOSTS) || isWeneverbeenfreeHost(embedUrl) || lowerName.includes("byfms") || lowerName.includes("dghg") || lowerName.includes("weneverbeenfree")) {
     logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to WeneverBeenFree/myvidplay extractor");
@@ -1463,6 +1509,19 @@ router2.get("/stream", async (req, res) => {
     intro: sourcesResult.skip_data?.intro,
     outro: sourcesResult.skip_data?.outro
   }, proxyUrl);
+  if (!stream) {
+    const { isPlaymogoHost: isPlaymogoHost2 } = await Promise.resolve().then(() => (init_dghg(), dghg_exports));
+    if (isPlaymogoHost2(sourcesResult.url)) {
+      res.json({
+        type: "dghg_embed",
+        embed_url: sourcesResult.url,
+        _server: "DGHG"
+      });
+      return;
+    }
+    res.status(502).json({ error: "Stream extraction failed from serverId" });
+    return;
+  }
   if (stream && "_dghgProxy" in stream) {
     const proxyInfo = stream._dghgProxy;
     res.json({

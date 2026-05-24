@@ -426,6 +426,22 @@ function doPlay(){
       if(!sd.servers||!sd.servers.length){setOverlay('❌','No servers found');return}
       var match=sd.servers.filter(function(s){return s.name.toLowerCase()===srv.toLowerCase()});
       if(!match.length){setOverlay('❌','Server "'+srv+'" not found');return}
+      // For DGHG, open Worker proxy page directly
+      if(srv.toLowerCase().includes('dghg')){
+        var dghgServer = match[0];
+        // Get embed URL from stream endpoint
+        fetch(BASE+'/api/stream?serverId='+encodeURIComponent(dghgServer.id))
+          .then(function(r){return r.json()})
+          .then(function(d){
+            if(d.embed_url){
+              showDGHGPlayer(d.embed_url, d.video_id || dghgServer.id);
+            } else {
+              setOverlay('❌','DGHG: no embed URL returned');
+            }
+          })
+          .catch(function(e){setOverlay('❌','DGHG lookup failed: '+e.message)});
+        return;
+      }
       tryNextServer(match,0,epId,type);
     })
     .catch(function(e){setOverlay('❌','Server lookup failed: '+e.message)});
@@ -454,17 +470,106 @@ function tryNextServer(servers,idx,epId,type){
     .catch(function(e){console.error('stream fetch error:', e); tryNextServer(servers,idx+1,epId,type)});
 }
 
-function showDGHGPlayer(embedUrl){
+function showDGHGPlayer(embedUrl, videoId){
   var ov=$('dghgOverlay');
   var fr=$('dghgFrame');
   var st=$('dghgStatus');
-  st.textContent='DGHG — Loading video player...';
+  var host = 'playmogo.com';
+  // Extract host from embed URL
+  try { host = new URL(embedUrl).hostname; } catch(e){}
+  
+  // Extract video ID from embed URL
+  if(!videoId){
+    try { videoId = new URL(embedUrl).pathname.split('/').pop(); } catch(e){}
+  }
+  
+  var workerUrl = WORKER + '/?id=' + encodeURIComponent(videoId) + '&host=' + encodeURIComponent(host);
+  var resultUrl = WORKER + '/__dghg_result?id=' + encodeURIComponent(videoId);
+  
+  st.textContent='DGHG — Loading player...';
   ov.style.display='flex';
-  fr.src=embedUrl;
+  fr.src = workerUrl;
   $('pOverlay').classList.add('hidden');
   $('pBar').style.display='flex';
-  $('pInfo').textContent='DGHG (inline player — complete any verification if shown)';
+  $('pInfo').textContent='DGHG — Waiting for video stream...';
   $('pTag').innerHTML='<span class="pTag df">DGHG</span>';
+  
+  // Poll for pass_md5 result from Worker
+  var polls = 0;
+  if(pollIv) clearInterval(pollIv);
+  pollIv = setInterval(function(){
+    polls++;
+    if(polls > 180){ // 3 min
+      clearInterval(pollIv);
+      st.textContent='DGHG — Timed out. Close and try again.';
+      return;
+    }
+    fetch(resultUrl)
+      .then(function(r){return r.json()})
+      .then(function(d){
+        if(d.status==='done'){
+          clearInterval(pollIv);
+          st.textContent='DGHG — Got stream URL, loading video...';
+          var passMd5 = d.passMd5Url;
+          var token = passMd5.split('/').pop();
+          // Fetch CDN URL from pass_md5 endpoint
+          var passMd5Full = 'https://' + host + '/' + passMd5;
+          fetch(BASE + '/api/dghg/passmd5?url=' + encodeURIComponent(passMd5Full) + '&referer=' + encodeURIComponent(host))
+            .then(function(r){return r.json()})
+            .then(function(cdn){
+              if(cdn.cdn_url){
+                var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+                var s = '';
+                for(var i=0;i<10;i++) s += chars.charAt(Math.floor(Math.random()*chars.length));
+                var m3u8 = cdn.cdn_url + s + '?token=' + token + '&expiry=' + Date.now();
+                st.textContent='DGHG — Playing!';
+                // Close overlay and play inline
+                ov.style.display='none';
+                fr.src='';
+                showVideo('DGHG');
+                playHLS(m3u8);
+              } else {
+                st.textContent='DGHG — CDN error: ' + (cdn.error || 'unknown');
+              }
+            })
+            .catch(function(e){
+              // Try direct pass_md5 fetch
+              fetch(passMd5Full, {headers:{'Referer':'https://'+host+'/'}})
+                .then(function(r){return r.text()})
+                .then(function(cdnText){
+                  if(cdnText && cdnText.trim().startsWith('http')){
+                    var cdnUrl = cdnText.trim();
+                    var chars2 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+                    var s2 = '';
+                    for(var j=0;j<10;j++) s2 += chars2.charAt(Math.floor(Math.random()*chars2.length));
+                    var m3u82 = cdnUrl + s2 + '?token=' + token + '&expiry=' + Date.now();
+                    st.textContent='DGHG — Playing!';
+                    ov.style.display='none';
+                    fr.src='';
+                    showVideo('DGHG');
+                    playHLS(m3u82);
+                  } else {
+                    st.textContent='DGHG — CDN fetch failed';
+                  }
+                })
+                .catch(function(){ st.textContent='DGHG — CDN fetch failed'; });
+            });
+        }
+      })
+      .catch(function(){ /* not ready */ });
+  }, 2000);
+  
+  // Update status while polling
+  var statusPolls = 0;
+  var statusIv = setInterval(function(){
+    statusPolls++;
+    if(statusPolls <= 60 && ov.style.display !== 'none'){
+      st.textContent='DGHG — Solving verification... (' + (statusPolls*2) + 's)';
+    }
+    if(ov.style.display === 'none'){
+      clearInterval(statusIv);
+    }
+  }, 2000);
 }
 
 function closeDGHGPlayer(){
