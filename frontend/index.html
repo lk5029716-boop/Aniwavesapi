@@ -222,7 +222,6 @@ select{appearance:auto;cursor:pointer}
         <select id="p_server"><option value="">Select server</option></select>
       </div>
     </div>
-    <div id="dgNote" class="dg-note" style="display:none">⚠️ DGHG requires Cloudflare Turnstile — a popup will open, solve it and the stream auto-plays.</div>
     <div class="try-row">
       <button class="btn" onclick="doPlay()">▶ Play</button>
       <button class="btn dark" onclick="doStop()">■ Stop</button>
@@ -231,7 +230,7 @@ select{appearance:auto;cursor:pointer}
       <div id="pOverlay">
         <div class="big" id="pIc">▶️</div>
         <div class="txt" id="pMsg">Select server and click Play</div>
-        <div class="sub" id="pSub">Vidplay &amp; BYFMS play instantly. DGHG needs Turnstile.</div>
+        <div class="sub" id="pSub">Pick a server and click Play</div>
         <div class="pErr" id="pErr"></div>
       </div>
       <video id="vv" controls playsinline></video>
@@ -399,10 +398,12 @@ function doPlay(){
         var sel=$('p_server');
         sel.innerHTML='';
         sd.servers.forEach(function(s){
+          if(s.name.toLowerCase().includes('dghg')) return; // skip DGHG
           var o=document.createElement('option');
           o.value=s.name; o.textContent=s.name;
           sel.appendChild(o);
         });
+        if(sel.options.length===0){setOverlay('❌','No servers found');return}
         sel.selectedIndex=0;
         // Auto-play first server
         doPlay();
@@ -434,10 +435,6 @@ function tryNextServer(servers,idx,epId,type){
     .then(function(d){
       console.log('stream response for', srv.name, ':', d);
       if(d.m3u8){showVideo(srv.name);playHLS(d.m3u8)}
-      else if(d.type==='dghg_proxy'){
-        $('dgNote').style.display='none';
-        doDGHG(d);
-      }
       else if(d.error){tryNextServer(servers,idx+1,epId,type)}
       else{tryNextServer(servers,idx+1,epId,type);}
     })
@@ -448,35 +445,7 @@ function doStop(){
   if(pollIv)clearInterval(pollIv);
   if(hls){hls.destroy();hls=null}
   var v=$('vv');v.pause();v.src='';
-  setOverlay('▶️','Stopped — enter details and click Play');
-}
-
-function doDGHG(data){
-  var vid=data.video_id||data.videoId,host=data.host,proxyUrl=data.proxy_url||data.proxyUrl;
-  var resUrl=WORKER+'/result?id='+encodeURIComponent(vid);
-  setOverlay('🔐','DGHG Turnstile','Solve the challenge in the popup');
-  var pop=window.open(proxyUrl,'dghg_pop','width=500,height=550');
-  if(!pop){setOverlay('🔐','Popup blocked — allow popups and try again');return}
-  startPoll();
-  function startPoll(){
-    var polls=0;pollIv=setInterval(function(){
-      polls++;if(polls>180){clearInterval(pollIv);setOverlay('⏰','Timed out');return}
-      fetch(resUrl).then(function(r){return r.json()}).then(function(d){
-        if(d.status==='done'){
-          clearInterval(pollIv);
-          setOverlay('📡','Getting CDN...','Almost done');
-          fetch(BASE+'/api/dghg/passmd5?url='+encodeURIComponent(d.passMd5Url)+'&referer=https://'+host+'/e/'+vid)
-            .then(function(r){return r.json()}).then(function(cd){
-              if(cd.cdn_url){
-                var c='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',s='';
-                for(var i=0;i<10;i++)s+=c.charAt(Math.floor(Math.random()*c.length));
-                showVideo('DGHG');playHLS(cd.cdn_url+s+'?token='+d.passMd5Url.split('/').pop()+'&expiry='+Date.now());
-              }else setOverlay('❌','CDN failed');
-            }).catch(function(e){setOverlay('❌','CDN error: '+e.message)});
-        }
-      }).catch(function(){});
-    },1000);
-  }
+  setOverlay('▶️','Stopped — select server and click Play');
 }
 </script>
 </body>
