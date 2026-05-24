@@ -217,6 +217,10 @@ select{appearance:auto;cursor:pointer}
         <label>Type</label>
         <select id="p_type"><option value="sub">sub</option><option value="dub">dub</option></select>
       </div>
+      <div>
+        <label>Server</label>
+        <select id="p_server"><option value="">Auto (try all)</option></select>
+      </div>
     </div>
     <div id="dgNote" class="dg-note" style="display:none">⚠️ DGHG requires Cloudflare Turnstile — a popup will open, solve it and the stream auto-plays.</div>
     <div class="try-row">
@@ -358,7 +362,8 @@ function playHLS(url){
 
 function doPlay(){
   var id=$('p_id').value.trim(),ep=$('p_ep').value,type=$('p_type').value;
-  console.log('doPlay:', id, ep, type);
+  var selectedServer=$('p_server').value;
+  console.log('doPlay:', id, ep, type, 'server:', selectedServer);
   if(!id){setOverlay('❌','Enter an anime ID');return}
   if(pollIv)clearInterval(pollIv);
   setOverlay('⏳','Loading...','Fetching servers');
@@ -368,6 +373,27 @@ function doPlay(){
     .then(function(sd){
       console.log('servers response:', sd);
       if(!sd.servers||!sd.servers.length){setOverlay('❌','No servers found');return}
+
+      // Populate server dropdown
+      var sel=$('p_server');
+      sel.innerHTML='';
+      var opt=document.createElement('option');
+      opt.value=''; opt.textContent='Auto (try all)';
+      sel.appendChild(opt);
+      sd.servers.forEach(function(s){
+        var o=document.createElement('option');
+        o.value=s.name; o.textContent=s.name;
+        sel.appendChild(o);
+      });
+
+      // If user selected a specific server, use only that one
+      if(selectedServer){
+        var match=sd.servers.filter(function(s){return s.name.toLowerCase()===selectedServer.toLowerCase()});
+        if(match.length){tryNextServer(match,0,epId,type);return}
+        setOverlay('❌','Server "'+selectedServer+'" not found');return;
+      }
+
+      // Auto mode: try all, skip DGHG
       var autoServers=sd.servers.filter(function(s){return !s.name.toLowerCase().includes('dghg')});
       if(!autoServers.length){autoServers=sd.servers;}
       tryNextServer(autoServers,0,epId,type);
