@@ -330,11 +330,13 @@ function playHLS(url){
   var v=$('vv');
   if(hls){hls.destroy();hls=null}
 
-  console.log('playHLS called with:', url);
+  // Proxy the m3u8 through our server to handle CORS / CDN restrictions
+  var proxyUrl = BASE+'/api/proxy?url='+encodeURIComponent(url);
+  console.log('playHLS proxy URL:', proxyUrl);
 
   if(window.Hls&&Hls.isSupported()){
     hls=new Hls({enableWorker:true});
-    hls.loadSource(url);
+    hls.loadSource(proxyUrl);
     hls.attachMedia(v);
     hls.on(Hls.Events.MANIFEST_PARSED,function(){
       console.log('HLS manifest parsed, playing...');
@@ -346,8 +348,8 @@ function playHLS(url){
         setOverlay('❌','Playback error: '+d.details);
       }
     });
-  }else if(v.canPlayType('application/vnd.apple-mpegurl')){
-    v.src=url;
+  }else if(v.canPlayType('application/vnd.apple.mpegurl')){
+    v.src=proxyUrl;
     v.onloadedmetadata=function(){v.play().catch(function(){})};
   }else{
     setOverlay('❌','HLS not supported');
