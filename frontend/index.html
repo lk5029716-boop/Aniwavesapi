@@ -374,29 +374,23 @@ function doPlay(){
       console.log('servers response:', sd);
       if(!sd.servers||!sd.servers.length){setOverlay('❌','No servers found');return}
 
-      // Populate server dropdown
+      // Populate server dropdown — no auto option, pick one
       var sel=$('p_server');
       sel.innerHTML='';
-      var opt=document.createElement('option');
-      opt.value=''; opt.textContent='Auto (try all)';
-      sel.appendChild(opt);
       sd.servers.forEach(function(s){
         var o=document.createElement('option');
         o.value=s.name; o.textContent=s.name;
         sel.appendChild(o);
       });
 
-      // If user selected a specific server, use only that one
+      // Use selected server
       if(selectedServer){
         var match=sd.servers.filter(function(s){return s.name.toLowerCase()===selectedServer.toLowerCase()});
         if(match.length){tryNextServer(match,0,epId,type);return}
-        setOverlay('❌','Server "'+selectedServer+'" not found');return;
+        // Selected server not in list, default to first
       }
-
-      // Auto mode: try all, skip DGHG
-      var autoServers=sd.servers.filter(function(s){return !s.name.toLowerCase().includes('dghg')});
-      if(!autoServers.length){autoServers=sd.servers;}
-      tryNextServer(autoServers,0,epId,type);
+      // Default: use first server
+      tryNextServer([sd.servers[0]],0,epId,type);
     })
     .catch(function(e){setOverlay('❌','Server lookup failed: '+e.message)});
 }
