@@ -133,6 +133,22 @@ router.get("/stream", async (req, res): Promise<void> => {
     outro: sourcesResult.skip_data?.outro,
   }, proxyUrl);
 
+  // If extraction returned null and the embed URL is a DGHG/Turnstile host,
+  // return the embed URL directly for client-side playback
+  if (!stream) {
+    const { isPlaymogoHost } = await import("../lib/anime/providers/dghg.js");
+    if (isPlaymogoHost(sourcesResult.url)) {
+      res.json({
+        type: "dghg_embed",
+        embed_url: sourcesResult.url,
+        _server: "DGHG",
+      });
+      return;
+    }
+    res.status(502).json({ error: "Stream extraction failed from serverId" });
+    return;
+  }
+
   if (stream && '_dghgProxy' in stream) {
     const proxyInfo = (stream as Record<string, unknown>)._dghgProxy as {
       url: string; id: string; host: string; resultEndpoint: string; player_url?: string;

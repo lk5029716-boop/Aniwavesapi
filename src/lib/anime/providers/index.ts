@@ -3,6 +3,7 @@ import { extractVidplay, isVidplayHost } from "./vidplay.js";
 import { extractMegacloud, isMegacloudHost } from "./megacloud.js";
 import { extractEchovideo, isEchovideoHost } from "./echovideo.js";
 import { extractWeneverbeenfree, isWeneverbeenfreeHost } from "./weneverbeenfree.js";
+import { extractDghg, isPlaymogoHost } from "./dghg.js";
 import type { StreamSource } from "../types.js";
 
 /** Hosts that are Vidplay clones/mirrors */
@@ -63,6 +64,17 @@ export async function extractStream(
   ) {
     logger.info({ serverName }, "routing to Echovideo extractor");
     return extractEchovideo(embedUrl, skipData);
+  }
+
+  // ── DGHG / PlayMogo / DoodStream (Turnstile-protected) ──────────────────────
+  // These hosts block datacenter IPs. Route to client-side proxy via Cloudflare Worker.
+  // Must come BEFORE the weneverbeenfree check since myvidplay.com is in WNBF_LIKE_HOSTS.
+  if (
+    lowerName.includes("dghg") ||
+    isPlaymogoHost(embedUrl)
+  ) {
+    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to DGHG client-side proxy extractor");
+    return extractDghg(embedUrl, skipData, proxyUrl);
   }
 
   // ── WeneverBeenFree / myvidplay.com ─────────────────────────────────────────

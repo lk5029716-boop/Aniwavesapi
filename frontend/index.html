@@ -405,7 +405,6 @@ function doPlay(){
         var sel=$('p_server');
         sel.innerHTML='';
         sd.servers.forEach(function(s){
-          if(s.name.toLowerCase().includes('dghg')) return; // skip DGHG
           var o=document.createElement('option');
           o.value=s.name; o.textContent=s.name;
           sel.appendChild(o);
@@ -442,9 +441,12 @@ function tryNextServer(servers,idx,epId,type){
     .then(function(d){
       console.log('stream response for', srv.name, ':', d);
       if(d.m3u8){showVideo(srv.name);playHLS(d.m3u8)}
+      else if(d.type==='dghg_embed'){
+        // DGHG: open embed URL directly in a popup, user's browser solves Turnstile
+        showDGHGPlayer(d.embed_url);
+      }
       else if(d.type==='dghg_proxy'){
-        // DGHG: show inline iframe with Worker proxy page
-        showDGHGPlayer(d);
+        showDGHGPlayer(d.proxy_url||d.url);
       }
       else if(d.error){tryNextServer(servers,idx+1,epId,type)}
       else{tryNextServer(servers,idx+1,epId,type);}
@@ -452,17 +454,16 @@ function tryNextServer(servers,idx,epId,type){
     .catch(function(e){console.error('stream fetch error:', e); tryNextServer(servers,idx+1,epId,type)});
 }
 
-function showDGHGPlayer(d){
+function showDGHGPlayer(embedUrl){
   var ov=$('dghgOverlay');
   var fr=$('dghgFrame');
   var st=$('dghgStatus');
-  st.textContent='DGHG — Loading player...';
+  st.textContent='DGHG — Loading video player...';
   ov.style.display='flex';
-  fr.src=d.url;
-  // Hide the regular player overlay
+  fr.src=embedUrl;
   $('pOverlay').classList.add('hidden');
   $('pBar').style.display='flex';
-  $('pInfo').textContent='DGHG (inline player)';
+  $('pInfo').textContent='DGHG (inline player — complete any verification if shown)';
   $('pTag').innerHTML='<span class="pTag df">DGHG</span>';
 }
 
