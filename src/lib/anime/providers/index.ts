@@ -3,7 +3,6 @@ import { extractVidplay, isVidplayHost } from "./vidplay.js";
 import { extractMegacloud, isMegacloudHost } from "./megacloud.js";
 import { extractEchovideo, isEchovideoHost } from "./echovideo.js";
 import { extractWeneverbeenfree, isWeneverbeenfreeHost } from "./weneverbeenfree.js";
-import { extractDghg, isPlaymogoHost } from "./dghg.js";
 import type { StreamSource } from "../types.js";
 
 /** Hosts that are Vidplay clones/mirrors */
@@ -23,10 +22,9 @@ const MEGACLOUD_LIKE_HOSTS = [
   "rabbitstream.net",
 ];
 
-/** Hosts that use the WeneverBeenFree/myvidplay MegaCloud-style pipeline */
+/** Hosts that use the WeneverBeenFree MegaCloud-style pipeline */
 const WNBF_LIKE_HOSTS = [
   "weneverbeenfree.com",
-  "myvidplay.com",   // DGHG server - same MegaCloud-style API
 ];
 
 /** Hosts that use the Echovideo getSources pipeline */
@@ -66,28 +64,15 @@ export async function extractStream(
     return extractEchovideo(embedUrl, skipData);
   }
 
-  // ── DGHG / PlayMogo / DoodStream (Turnstile-protected) ──────────────────────
-  // These hosts block datacenter IPs. Route to client-side proxy via Cloudflare Worker.
-  // Must come BEFORE the weneverbeenfree check since myvidplay.com is in WNBF_LIKE_HOSTS.
-  if (
-    lowerName.includes("dghg") ||
-    isPlaymogoHost(embedUrl)
-  ) {
-    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to DGHG client-side proxy extractor");
-    return extractDghg(embedUrl, skipData, proxyUrl);
-  }
-
-  // ── WeneverBeenFree / myvidplay.com ─────────────────────────────────────────
-  // BYFMS → weneverbeenfree.com, DGHG → myvidplay.com
-  // Both use the MegaCloud-style getSources API with key-embedded AES encryption
+  // ── WeneverBeenFree ─────────────────────────────────────────────────────────
+  // Uses the MegaCloud-style getSources API with key-embedded AES encryption
   if (
     matchHost(embedUrl, WNBF_LIKE_HOSTS) ||
     isWeneverbeenfreeHost(embedUrl) ||
     lowerName.includes("byfms") ||
-    lowerName.includes("dghg") ||
     lowerName.includes("weneverbeenfree")
   ) {
-    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to WeneverBeenFree/myvidplay extractor");
+    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to WeneverBeenFree extractor");
     return extractWeneverbeenfree(embedUrl, skipData);
   }
 

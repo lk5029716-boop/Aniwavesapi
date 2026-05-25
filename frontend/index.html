@@ -56,8 +56,6 @@ select{appearance:auto;cursor:pointer}
 #pBar{display:none;justify-content:space-between;align-items:center;padding:8px 12px;background:#0f0f1a;border-radius:6px;margin-top:8px;font-size:13px}
 .pTag{display:inline-block;padding:2px 10px;border-radius:4px;font-size:11px;font-weight:700}
 .pTag.vp{background:#6366f1;color:#fff}
-.pTag.df{background:#f59e0b;color:#000}
-.dg-note{display:none;background:#f59e0b0d;border:1px solid #f59e0b33;border-radius:6px;padding:10px 14px;margin-top:10px;font-size:13px;color:#f59e0b}
 </style>
 </head>
 <body>
@@ -235,13 +233,6 @@ select{appearance:auto;cursor:pointer}
       </div>
       <video id="vv" controls playsinline></video>
     </div>
-    <div id="dghgOverlay" style="display:none;position:fixed;inset:0;background:#000;z-index:100;flex-direction:column">
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#111;font-size:13px;font-family:sans-serif;color:#fff">
-        <span id="dghgStatus">DGHG Player</span>
-        <button onclick="closeDGHGPlayer()" style="background:#333;color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px">✕ Close</button>
-      </div>
-      <iframe id="dghgFrame" style="flex:1;border:none;width:100%" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>
-    </div>
     <div id="pBar">
       <span id="pInfo"></span>
       <span id="pTag"></span>
@@ -252,8 +243,7 @@ select{appearance:auto;cursor:pointer}
 <script src="/hls.min.js"></script>
 <script>
 var BASE='https://aniwavesapis.onrender.com';
-var WORKER='https://dghg-proxy.lk5029716.workers.dev';
-var pollIv=null, hls=null;
+var hls=null;
 
 function $(id){return document.getElementById(id)}
 
@@ -328,8 +318,7 @@ function showVideo(server){
   $('vv').style.display='block';
   $('pBar').style.display='flex';
   $('pInfo').textContent=$('p_id').value+' — Ep '+$('p_ep').value;
-  var isD=server==='DGHG';
-  $('pTag').innerHTML='<span class="pTag '+(isD?'df':'vp')+'">'+server+'</span>';
+  $('pTag').innerHTML='<span class="pTag vp">'+server+'</span>';
 }
 
 function proxyUrl(url, referer){
@@ -392,7 +381,6 @@ function doPlay(){
   var id=$('p_id').value.trim(),ep=$('p_ep').value,type=$('p_type').value;
   var srv=$('p_server').value;
   if(!id){setOverlay('❌','Enter an anime ID');return}
-  if(pollIv)clearInterval(pollIv);
   var epId=id+'-ep-'+ep;
 
   // If no server selected, load servers then auto-play first one
@@ -426,22 +414,6 @@ function doPlay(){
       if(!sd.servers||!sd.servers.length){setOverlay('❌','No servers found');return}
       var match=sd.servers.filter(function(s){return s.name.toLowerCase()===srv.toLowerCase()});
       if(!match.length){setOverlay('❌','Server "'+srv+'" not found');return}
-      // For DGHG, open Worker proxy page directly
-      if(srv.toLowerCase().includes('dghg')){
-        var dghgServer = match[0];
-        // Get embed URL from stream endpoint
-        fetch(BASE+'/api/stream?serverId='+encodeURIComponent(dghgServer.id))
-          .then(function(r){return r.json()})
-          .then(function(d){
-            if(d.embed_url){
-              showDGHGPlayer(d.embed_url, d.video_id || dghgServer.id);
-            } else {
-              setOverlay('❌','DGHG: no embed URL returned');
-            }
-          })
-          .catch(function(e){setOverlay('❌','DGHG lookup failed: '+e.message)});
-        return;
-      }
       tryNextServer(match,0,epId,type);
     })
     .catch(function(e){setOverlay('❌','Server lookup failed: '+e.message)});
@@ -457,127 +429,10 @@ function tryNextServer(servers,idx,epId,type){
     .then(function(d){
       console.log('stream response for', srv.name, ':', d);
       if(d.m3u8){showVideo(srv.name);playHLS(d.m3u8)}
-      else if(d.type==='dghg_embed'){
-        // DGHG: open embed URL directly in a popup, user's browser solves Turnstile
-        showDGHGPlayer(d.embed_url);
-      }
-      else if(d.type==='dghg_proxy'){
-        showDGHGPlayer(d.proxy_url||d.url);
-      }
       else if(d.error){tryNextServer(servers,idx+1,epId,type)}
       else{tryNextServer(servers,idx+1,epId,type);}
     })
     .catch(function(e){console.error('stream fetch error:', e); tryNextServer(servers,idx+1,epId,type)});
-}
-
-function showDGHGPlayer(embedUrl, videoId){
-  var ov=$('dghgOverlay');
-  var fr=$('dghgFrame');
-  var st=$('dghgStatus');
-  var host = 'playmogo.com';
-  // Extract host from embed URL
-  try { host = new URL(embedUrl).hostname; } catch(e){}
-  
-  // Extract video ID from embed URL
-  if(!videoId){
-    try { videoId = new URL(embedUrl).pathname.split('/').pop(); } catch(e){}
-  }
-  
-  var workerUrl = WORKER + '/?id=' + encodeURIComponent(videoId) + '&host=' + encodeURIComponent(host);
-  var resultUrl = WORKER + '/__dghg_result?id=' + encodeURIComponent(videoId);
-  
-  st.textContent='DGHG — Loading player...';
-  ov.style.display='flex';
-  fr.src = workerUrl;
-  $('pOverlay').classList.add('hidden');
-  $('pBar').style.display='flex';
-  $('pInfo').textContent='DGHG — Waiting for video stream...';
-  $('pTag').innerHTML='<span class="pTag df">DGHG</span>';
-  
-  // Poll for pass_md5 result from Worker
-  var polls = 0;
-  if(pollIv) clearInterval(pollIv);
-  pollIv = setInterval(function(){
-    polls++;
-    if(polls > 180){ // 3 min
-      clearInterval(pollIv);
-      st.textContent='DGHG — Timed out. Close and try again.';
-      return;
-    }
-    fetch(resultUrl)
-      .then(function(r){return r.json()})
-      .then(function(d){
-        if(d.status==='done'){
-          clearInterval(pollIv);
-          st.textContent='DGHG — Got stream URL, loading video...';
-          var passMd5 = d.passMd5Url;
-          var token = passMd5.split('/').pop();
-          // Fetch CDN URL from pass_md5 endpoint
-          var passMd5Full = 'https://' + host + '/' + passMd5;
-          fetch(BASE + '/api/dghg/passmd5?url=' + encodeURIComponent(passMd5Full) + '&referer=' + encodeURIComponent(host))
-            .then(function(r){return r.json()})
-            .then(function(cdn){
-              if(cdn.cdn_url){
-                var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-                var s = '';
-                for(var i=0;i<10;i++) s += chars.charAt(Math.floor(Math.random()*chars.length));
-                var m3u8 = cdn.cdn_url + s + '?token=' + token + '&expiry=' + Date.now();
-                st.textContent='DGHG — Playing!';
-                // Close overlay and play inline
-                ov.style.display='none';
-                fr.src='';
-                showVideo('DGHG');
-                playHLS(m3u8);
-              } else {
-                st.textContent='DGHG — CDN error: ' + (cdn.error || 'unknown');
-              }
-            })
-            .catch(function(e){
-              // Try direct pass_md5 fetch
-              fetch(passMd5Full, {headers:{'Referer':'https://'+host+'/'}})
-                .then(function(r){return r.text()})
-                .then(function(cdnText){
-                  if(cdnText && cdnText.trim().startsWith('http')){
-                    var cdnUrl = cdnText.trim();
-                    var chars2 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-                    var s2 = '';
-                    for(var j=0;j<10;j++) s2 += chars2.charAt(Math.floor(Math.random()*chars2.length));
-                    var m3u82 = cdnUrl + s2 + '?token=' + token + '&expiry=' + Date.now();
-                    st.textContent='DGHG — Playing!';
-                    ov.style.display='none';
-                    fr.src='';
-                    showVideo('DGHG');
-                    playHLS(m3u82);
-                  } else {
-                    st.textContent='DGHG — CDN fetch failed';
-                  }
-                })
-                .catch(function(){ st.textContent='DGHG — CDN fetch failed'; });
-            });
-        }
-      })
-      .catch(function(){ /* not ready */ });
-  }, 2000);
-  
-  // Update status while polling
-  var statusPolls = 0;
-  var statusIv = setInterval(function(){
-    statusPolls++;
-    if(statusPolls <= 60 && ov.style.display !== 'none'){
-      st.textContent='DGHG — Solving verification... (' + (statusPolls*2) + 's)';
-    }
-    if(ov.style.display === 'none'){
-      clearInterval(statusIv);
-    }
-  }, 2000);
-}
-
-function closeDGHGPlayer(){
-  $('dghgFrame').src='';
-  $('dghgOverlay').style.display='none';
-  $('pOverlay').classList.remove('hidden');
-  $('pBar').style.display='none';
-  setOverlay('▶️','Closed — select server and click Play');
 }
 </script>
 </body>

@@ -1,63 +1,125 @@
-var __defProp = Object.defineProperty;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
+// src/app.ts
+import express from "express";
+import cors from "cors";
+import pinoHttp from "pino-http";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// src/routes/index.ts
+import { Router as Router3 } from "express";
+
+// src/routes/health.ts
+import { Router } from "express";
+import { execSync } from "child_process";
+var router = Router();
+router.get("/health", async (_req, res) => {
+  let curlAvailable = false;
+  let chromiumPath = null;
+  let playwrightVersion = null;
+  let chromiumLaunchTest = null;
+  try {
+    execSync("which curl", { encoding: "utf8", timeout: 5e3 });
+    curlAvailable = true;
+  } catch {
+    curlAvailable = false;
+  }
+  try {
+    chromiumPath = execSync(
+      "find /ms-playwright -name chrome -type f 2>/dev/null | head -1",
+      { encoding: "utf8", timeout: 5e3 }
+    ).trim();
+  } catch {
+    chromiumPath = null;
+  }
+  try {
+    const pw = await import("playwright");
+    playwrightVersion = pw?.chromium ? "available" : "unknown";
+  } catch {
+    playwrightVersion = "not available";
+  }
+  if (chromiumPath) {
+    try {
+      const { chromium } = await import("playwright");
+      const browser = await chromium.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"]
+      });
+      await browser.close();
+      chromiumLaunchTest = "success";
+    } catch (e) {
+      chromiumLaunchTest = `failed: ${e.message.slice(0, 100)}`;
+    }
+  }
+  res.json({
+    status: "ok",
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    curl: curlAvailable,
+    node: process.version,
+    env: process.env.NODE_ENV || "development",
+    chromium: chromiumPath || "not found",
+    playwright: playwrightVersion,
+    chromiumLaunchTest
+  });
+});
+var health_default = router;
+
+// src/routes/anime.ts
+import { Router as Router2 } from "express";
+import axios5 from "axios";
+
+// src/lib/anime/scraper.ts
+import axios from "axios";
+import * as cheerio from "cheerio";
 
 // src/lib/logger.ts
 import pino from "pino";
-var isProduction, logger;
-var init_logger = __esm({
-  "src/lib/logger.ts"() {
-    isProduction = process.env.NODE_ENV === "production";
-    logger = pino({
-      level: process.env.LOG_LEVEL ?? "info",
-      redact: [
-        "req.headers.authorization",
-        "req.headers.cookie",
-        "res.headers['set-cookie']"
-      ],
-      ...isProduction ? {} : {
-        transport: {
-          target: "pino-pretty",
-          options: { colorize: true }
-        }
-      }
-    });
+var isProduction = process.env.NODE_ENV === "production";
+var logger = pino({
+  level: process.env.LOG_LEVEL ?? "info",
+  redact: [
+    "req.headers.authorization",
+    "req.headers.cookie",
+    "res.headers['set-cookie']"
+  ],
+  ...isProduction ? {} : {
+    transport: {
+      target: "pino-pretty",
+      options: { colorize: true }
+    }
   }
 });
 
 // src/lib/anime/cache.ts
 import NodeCache from "node-cache";
+var cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 function cacheGet(key) {
   return cache.get(key);
 }
 function cacheSet(key, value, ttl = 300) {
   cache.set(key, value, ttl);
 }
-var cache;
-var init_cache = __esm({
-  "src/lib/anime/cache.ts"() {
-    cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
-  }
-});
 
 // src/lib/anime/scraper.ts
-var scraper_exports = {};
-__export(scraper_exports, {
-  getAnimeDetails: () => getAnimeDetails,
-  getEmbedUrl: () => getEmbedUrl,
-  getEpisodes: () => getEpisodes,
-  getNumericId: () => getNumericId,
-  getServers: () => getServers,
-  searchAnime: () => searchAnime
+var BASE_URL = "https://aniwaves.ru";
+var client = axios.create({
+  baseURL: BASE_URL,
+  timeout: 15e3,
+  headers: {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9"
+  }
 });
-import axios from "axios";
-import * as cheerio from "cheerio";
+var ajaxClient = axios.create({
+  baseURL: BASE_URL,
+  timeout: 15e3,
+  headers: {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    Accept: "application/json, text/javascript, */*; q=0.01",
+    "X-Requested-With": "XMLHttpRequest",
+    Referer: BASE_URL
+  }
+});
 async function searchAnime(q) {
   const cacheKey = `search:${q}`;
   const cached = cacheGet(cacheKey);
@@ -308,150 +370,8 @@ async function getEmbedUrl(linkId, refererAnimeId) {
   }
   return data.result;
 }
-var BASE_URL, client, ajaxClient;
-var init_scraper = __esm({
-  "src/lib/anime/scraper.ts"() {
-    init_logger();
-    init_cache();
-    BASE_URL = "https://aniwaves.ru";
-    client = axios.create({
-      baseURL: BASE_URL,
-      timeout: 15e3,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9"
-      }
-    });
-    ajaxClient = axios.create({
-      baseURL: BASE_URL,
-      timeout: 15e3,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "application/json, text/javascript, */*; q=0.01",
-        "X-Requested-With": "XMLHttpRequest",
-        Referer: BASE_URL
-      }
-    });
-  }
-});
-
-// src/lib/anime/providers/dghg.ts
-var dghg_exports = {};
-__export(dghg_exports, {
-  extractDghg: () => extractDghg,
-  isPlaymogoHost: () => isPlaymogoHost
-});
-function isPlaymogoHost(url) {
-  try {
-    const host = new URL(url).hostname;
-    return DOOD_HOSTS.some((h) => host.includes(h));
-  } catch {
-    return false;
-  }
-}
-async function extractDghg(embedUrl, _skipData, _proxyUrl) {
-  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] returning null \u2014 frontend will handle via direct embed");
-  return null;
-}
-var DOOD_HOSTS;
-var init_dghg = __esm({
-  "src/lib/anime/providers/dghg.ts"() {
-    init_logger();
-    DOOD_HOSTS = [
-      "playmogo.com",
-      "myvidplay.com",
-      "doodstream.com",
-      "dood.la",
-      "dood.to",
-      "dood.so",
-      "dood.ws",
-      "dood.pm",
-      "dood.wf",
-      "dood.re",
-      "dood.yt",
-      "dood.cx",
-      "dood.sh",
-      "dood.watch"
-    ];
-  }
-});
-
-// src/app.ts
-import express from "express";
-import cors from "cors";
-import pinoHttp from "pino-http";
-import path from "path";
-import { fileURLToPath } from "url";
-
-// src/routes/index.ts
-import { Router as Router3 } from "express";
-
-// src/routes/health.ts
-import { Router } from "express";
-import { execSync } from "child_process";
-var router = Router();
-router.get("/health", async (_req, res) => {
-  let curlAvailable = false;
-  let chromiumPath = null;
-  let playwrightVersion = null;
-  let chromiumLaunchTest = null;
-  try {
-    execSync("which curl", { encoding: "utf8", timeout: 5e3 });
-    curlAvailable = true;
-  } catch {
-    curlAvailable = false;
-  }
-  try {
-    chromiumPath = execSync(
-      "find /ms-playwright -name chrome -type f 2>/dev/null | head -1",
-      { encoding: "utf8", timeout: 5e3 }
-    ).trim();
-  } catch {
-    chromiumPath = null;
-  }
-  try {
-    const pw = await import("playwright");
-    playwrightVersion = pw?.chromium ? "available" : "unknown";
-  } catch {
-    playwrightVersion = "not available";
-  }
-  if (chromiumPath) {
-    try {
-      const { chromium } = await import("playwright");
-      const browser = await chromium.launch({
-        headless: true,
-        args: ["--no-sandbox", "--disable-setuid-sandbox"]
-      });
-      await browser.close();
-      chromiumLaunchTest = "success";
-    } catch (e) {
-      chromiumLaunchTest = `failed: ${e.message.slice(0, 100)}`;
-    }
-  }
-  res.json({
-    status: "ok",
-    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-    curl: curlAvailable,
-    node: process.version,
-    env: process.env.NODE_ENV || "development",
-    chromium: chromiumPath || "not found",
-    playwright: playwrightVersion,
-    chromiumLaunchTest
-  });
-});
-var health_default = router;
-
-// src/routes/anime.ts
-init_scraper();
-import { Router as Router2 } from "express";
-import axios5 from "axios";
-
-// src/lib/anime/providers/index.ts
-init_logger();
 
 // src/lib/anime/providers/vidplay.ts
-init_logger();
 import axios2 from "axios";
 import * as cheerio2 from "cheerio";
 import CryptoJS from "crypto-js";
@@ -732,7 +652,6 @@ function isVidplayHost(embedUrl) {
 }
 
 // src/lib/anime/providers/megacloud.ts
-init_logger();
 import axios3 from "axios";
 import * as cheerio3 from "cheerio";
 import CryptoJS2 from "crypto-js";
@@ -941,11 +860,9 @@ function isMegacloudHost(embedUrl) {
 }
 
 // src/lib/anime/providers/echovideo.ts
-init_logger();
 import axios4 from "axios";
 
 // src/lib/anime/providers/playwright-extractor.ts
-init_logger();
 import https from "https";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 var ANIWAVES_REFERER = "https://aniwaves.ru/";
@@ -1324,7 +1241,6 @@ function isEchovideoHost(url) {
 }
 
 // src/lib/anime/providers/weneverbeenfree.ts
-init_logger();
 async function extractWeneverbeenfree(embedUrl, skipData) {
   logger.info(
     { embedUrl: embedUrl.slice(0, 90) },
@@ -1342,7 +1258,6 @@ function isWeneverbeenfreeHost(url) {
 }
 
 // src/lib/anime/providers/index.ts
-init_dghg();
 var VIDPLAY_LIKE_HOSTS = [
   "vidplay.online",
   "vidplay.lol",
@@ -1357,9 +1272,7 @@ var MEGACLOUD_LIKE_HOSTS = [
   "rabbitstream.net"
 ];
 var WNBF_LIKE_HOSTS = [
-  "weneverbeenfree.com",
-  "myvidplay.com"
-  // DGHG server - same MegaCloud-style API
+  "weneverbeenfree.com"
 ];
 var ECHOVIDEO_LIKE_HOSTS = [
   "play.echovideo.ru",
@@ -1383,12 +1296,8 @@ async function extractStream(embedUrl, serverName, skipData, proxyUrl) {
     logger.info({ serverName }, "routing to Echovideo extractor");
     return extractEchovideo(embedUrl, skipData);
   }
-  if (lowerName.includes("dghg") || isPlaymogoHost(embedUrl)) {
-    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to DGHG client-side proxy extractor");
-    return extractDghg(embedUrl, skipData, proxyUrl);
-  }
-  if (matchHost(embedUrl, WNBF_LIKE_HOSTS) || isWeneverbeenfreeHost(embedUrl) || lowerName.includes("byfms") || lowerName.includes("dghg") || lowerName.includes("weneverbeenfree")) {
-    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to WeneverBeenFree/myvidplay extractor");
+  if (matchHost(embedUrl, WNBF_LIKE_HOSTS) || isWeneverbeenfreeHost(embedUrl) || lowerName.includes("byfms") || lowerName.includes("weneverbeenfree")) {
+    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to WeneverBeenFree extractor");
     return extractWeneverbeenfree(embedUrl, skipData);
   }
   if (matchHost(embedUrl, MEGACLOUD_LIKE_HOSTS) || isMegacloudHost(embedUrl) || lowerName.includes("megacloud") || lowerName.includes("rapidcloud") || lowerName.includes("rabbitstream")) {
@@ -1509,246 +1418,11 @@ router2.get("/stream", async (req, res) => {
     intro: sourcesResult.skip_data?.intro,
     outro: sourcesResult.skip_data?.outro
   }, proxyUrl);
-  if (!stream) {
-    const { isPlaymogoHost: isPlaymogoHost2 } = await Promise.resolve().then(() => (init_dghg(), dghg_exports));
-    if (isPlaymogoHost2(sourcesResult.url)) {
-      res.json({
-        type: "dghg_embed",
-        embed_url: sourcesResult.url,
-        _server: "DGHG"
-      });
-      return;
-    }
-    res.status(502).json({ error: "Stream extraction failed from serverId" });
-    return;
-  }
-  if (stream && "_dghgProxy" in stream) {
-    const proxyInfo = stream._dghgProxy;
-    res.json({
-      type: "dghg_proxy",
-      proxy_url: proxyInfo.url,
-      player_url: proxyInfo.player_url,
-      video_id: proxyInfo.id,
-      host: proxyInfo.host,
-      result_endpoint: proxyInfo.resultEndpoint,
-      _server: "DGHG"
-    });
-    return;
-  }
   if (stream?.m3u8) {
     res.json({ ...stream, _server: "direct" });
     return;
   }
   res.status(502).json({ error: "Stream extraction failed from serverId" });
-});
-router2.get("/dghg/poll", async (req, res) => {
-  const videoId = req.query["id"];
-  const workerUrl = req.query["worker"];
-  if (!videoId || !workerUrl) {
-    res.status(400).json({ error: "Missing id or worker parameter" });
-    return;
-  }
-  try {
-    const result = await axios5.get(`${workerUrl}/__dghg_result?id=${encodeURIComponent(videoId)}`, {
-      timeout: 5e3
-    });
-    res.json(result.data);
-  } catch (err) {
-    res.status(502).json({ error: "Poll failed", reason: err.message });
-  }
-});
-router2.get("/dghg/passmd5", async (req, res) => {
-  const passMd5Url = req.query["url"];
-  const referer = req.query["referer"] || "https://playmogo.com/";
-  if (!passMd5Url) {
-    res.status(400).json({ error: "Missing url parameter" });
-    return;
-  }
-  try {
-    const result = await axios5.get(passMd5Url, {
-      timeout: 1e4,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        Accept: "*/*",
-        Referer: referer
-      },
-      maxRedirects: 5
-    });
-    const cdnUrl = typeof result.data === "string" ? result.data.trim() : result.data;
-    res.json({ cdn_url: cdnUrl });
-  } catch (err) {
-    const e = err;
-    res.status(502).json({
-      error: "pass_md5 call failed",
-      reason: e.message,
-      upstream_status: e.response?.status
-    });
-  }
-});
-router2.get("/player/dghg", (req, res) => {
-  const videoId = req.query["id"];
-  const host = req.query["host"] || "myvidplay.com";
-  if (!videoId) {
-    res.status(400).json({ error: "Missing query param: id" });
-    return;
-  }
-  const playerHtml = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Stream Player</title>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#000;color:#fff;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center}
-#player-container{width:100%;max-width:900px;margin:20px}
-video{width:100%;display:block;background:#000;min-height:400px;border-radius:8px}
-#overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:10}
-#overlay.hidden{display:none}
-.box{background:#111;border:1px solid #222;border-radius:12px;padding:32px;text-align:center;max-width:420px}
-.box .icon{font-size:48px;margin-bottom:16px}
-.box .msg{font-size:18px;margin-bottom:8px}
-.box .sub{font-size:14px;color:#666}
-.box .err{color:#ff4444;font-size:14px;margin-top:12px}
-#retry-btn{background:#00d4ff;color:#000;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;margin-top:16px}
-#retry-btn:hover{background:#00b8e6}
-</style>
-</head>
-<body>
-<div id="player-container">
-  <div id="overlay">
-    <div class="box">
-      <div class="icon" id="icon">\u{1F510}</div>
-      <div class="msg" id="msg">Loading stream...</div>
-      <div class="sub" id="sub">Preparing Turnstile verification</div>
-      <div class="err" id="err"></div>
-      <button id="retry-btn" onclick="location.reload()" style="display:none">Retry</button>
-    </div>
-  </div>
-  <video id="video" controls playsinline style="display:none;border-radius:8px;overflow:hidden"></video>
-</div>
-<script>
-(function(){
-  const videoId = '${videoId}';
-  const host = '${host}';
-  const WORKER = 'https://dghg-proxy.${process.env.CF_ACCOUNT_DOMAIN || "lk5029716.workers.dev"}';
-  const PROXY_URL = WORKER + '/?id=' + encodeURIComponent(videoId) + '&host=' + encodeURIComponent(host);
-  const RESULT_URL = WORKER + '/__dghg_result?id=' + encodeURIComponent(videoId);
-
-  function setUI(icon, msg, sub, err, showRetry){
-    document.getElementById('icon').textContent = icon;
-    document.getElementById('msg').textContent = msg;
-    document.getElementById('sub').textContent = sub || '';
-    document.getElementById('err').textContent = err || '';
-    document.getElementById('retry-btn').style.display = showRetry ? 'inline-block' : 'none';
-  }
-
-  function hideOverlay(){ document.getElementById('overlay').classList.add('hidden'); }
-  function showVideo(){ document.getElementById('video').style.display='block'; }
-
-  async function getCDN(passMd5Url, token){
-    setUI('\u{1F4E1}','Fetching CDN URL...','This should take a second');
-    try {
-      const r = await fetch('https://' + host + '/' + passMd5Url, {
-        headers:{'Referer':'https://' + host + '/e/' + videoId}
-      });
-      const url = (await r.text()).trim();
-      if(!url.startsWith('http')) throw new Error('Invalid CDN response');
-      return url;
-    } catch(e){
-      throw new Error('CDN fetch failed: ' + e.message);
-    }
-  }
-
-  function buildM3u8(cdnUrl, token){
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let s = '';
-    for(let i=0;i<10;i++) s += chars.charAt(Math.floor(Math.random()*chars.length));
-    return cdnUrl + s + '?token=' + token + '&expiry=' + Date.now();
-  }
-
-  function playM3u8(url){
-    const video = document.getElementById('video');
-    if(Hls.isSupported()){
-      const hls = new Hls({enableWorker:true,lowLatencyMode:true});
-      hls.loadSource(url);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, ()=>{
-        hideOverlay(); showVideo();
-        video.play().catch(()=>{});
-      });
-      hls.on(Hls.Events.ERROR, (e,d)=>{
-        if(d.fatal){ hideOverlay(); setUI('\u274C','Playback error','Failed to load video stream',d.type,true); }
-      });
-    } else if(video.canPlayType('application/vnd.apple.mpegurl')){
-      video.src = url;
-      video.addEventListener('loadedmetadata', ()=>{ hideOverlay(); showVideo(); video.play().catch(()=>{}); });
-    } else {
-      setUI('\u274C','Browser not supported','Your browser cannot play HLS streams', '', true);
-    }
-  }
-
-  // Start flow
-  setUI('\u{1F510}','Solving Turnstile...','A new window opened \u2014 complete the challenge there');
-
-  // Open popup for Turnstile
-  const popup = window.open(PROXY_URL,'dghg_popup','width=520,height=580,left='+((screen.width-520)/2)+',top='+((screen.height-580)/2));
-
-  if(!popup){
-    // Popup blocked \u2014 use redirect approach
-    setUI('\u{1F510}','Please solve the Click below to continue','');
-    const btn = document.createElement('button');
-    btn.id='retry-btn';
-    btn.textContent='Open Turnstile Page';
-    btn.style.display='inline-block';
-    btn.onclick = ()=>{
-      window.open(PROXY_URL,'dghg_popup','width=520,height=580');
-      btn.style.display='none';
-      startPoll();
-    };
-    document.querySelector('.box').appendChild(btn);
-    return; // wait for user click
-  }
-
-  startPoll();
-
-  let polls = 0;
-  function startPoll(){
-    setUI('\u23F3','Waiting for Turnstile...','Solve the challenge in the popup window');
-    const iv = setInterval(async()=>{
-      polls++;
-      if(polls > 180){ // 3 min
-        clearInterval(iv);
-        setUI('\u23F0','Timed out','Turnstile was not solved in time','',true);
-        return;
-      }
-      try{
-        const r = await fetch(RESULT_URL);
-        const d = await r.json();
-        if(d.status==='done'){
-          clearInterval(iv);
-          const passMd5 = d.passMd5Url;
-          const token = passMd5.split('/').pop();
-          try{
-            const cdn = await getCDN(passMd5, token);
-            const m3u8 = buildM3u8(cdn, token);
-            playM3u8(m3u8);
-          } catch(e){
-            clearInterval(iv);
-            setUI('\u274C','Failed to get CDN URL',e.message,'',true);
-          }
-        }
-      } catch(e){ /* not ready, keep polling */ }
-    },1000);
-  }
-})();
-</script>
-</body>
-</html>`;
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(playerHtml);
 });
 router2.get("/proxy", async (req, res) => {
   const urlParam = Array.isArray(req.query["url"]) ? req.query["url"][0] : req.query["url"];
@@ -1771,8 +1445,6 @@ router2.get("/proxy", async (req, res) => {
       referer = "https://play.echovideo.ru/";
     } else if (host.includes("weneverbeenfree") || host.includes("owphbf") || host.includes("sprintcdn")) {
       referer = "https://weneverbeenfree.com/";
-    } else if (host.includes("playmogo") || host.includes("doodcdn") || host.includes("doodstream") || host.includes("cloudatacdn")) {
-      referer = "https://playmogo.com/";
     } else {
       referer = "https://play.echovideo.ru/";
     }
@@ -1846,262 +1518,6 @@ router2.get("/proxy", async (req, res) => {
     }
   }
 });
-router2.get("/debug/dghg-full", async (req, res) => {
-  const linkId = req.query["linkId"];
-  if (!linkId) {
-    res.status(400).json({ error: "Missing linkId" });
-    return;
-  }
-  const logs = [];
-  const log = (msg) => logs.push(`[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}`);
-  try {
-    const { getEmbedUrl: getEmbedUrl2 } = await Promise.resolve().then(() => (init_scraper(), scraper_exports));
-    const sourcesResult = await getEmbedUrl2(linkId);
-    if (!sourcesResult?.url) {
-      res.status(502).json({ error: "no embed URL", logs });
-      return;
-    }
-    const embedUrl = sourcesResult.url;
-    log(`embedUrl: ${embedUrl}`);
-    const { chromium } = await import("playwright");
-    const browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage"]
-    });
-    const context = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      extraHTTPHeaders: { Referer: "https://aniwaves.ru/" }
-    });
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, "webdriver", { get: () => false });
-      window.chrome = { runtime: {} };
-    });
-    const page = await context.newPage();
-    const allRequests = [];
-    page.on("request", (req2) => {
-      const entry = { method: req2.method(), url: req2.url().slice(0, 150), time: Date.now() };
-      allRequests.push(entry);
-      if (req2.url().includes("/dood") || req2.url().includes("turnstile") || req2.url().includes(".m3u8") || req2.url().includes("pass_md5")) {
-        log(`REQUEST: ${req2.method()} ${req2.url().slice(0, 120)}`);
-      }
-    });
-    const allResponses = [];
-    page.on("response", (resp) => {
-      const entry = { status: resp.status(), url: resp.url().slice(0, 150), time: Date.now() };
-      allResponses.push(entry);
-      if (resp.url().includes("/dood") || resp.url().includes("turnstile")) {
-        log(`RESPONSE: ${resp.status()} ${resp.url().slice(0, 120)}`);
-      }
-    });
-    log("navigating to embed page...");
-    const navResp = await page.goto(embedUrl, { waitUntil: "networkidle", timeout: 6e4 }).catch(async () => {
-      log("networkidle timeout, trying domcontentloaded...");
-      return page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 3e4 }).catch(() => null);
-    });
-    log(`page loaded: status=${navResp?.status()}, url=${page.url()}, htmlLen=${(await page.content()).length}`);
-    await page.waitForTimeout(5e3);
-    let html = await page.content();
-    const urlAfterLoad = page.url();
-    log(`after 5s wait: url=${urlAfterLoad}, htmlLen=${html.length}`);
-    log(`has Turnstile: ${html.toLowerCase().includes("turnstile")}`);
-    log(`has pass_md5: ${html.includes("pass_md5")}`);
-    log(`has /dood endpoint call: ${allRequests.some((r) => r.url.includes("/dood"))}`);
-    log("clicking play button...");
-    const clickResult = await page.evaluate(() => {
-      const selectors = [".captcha_l", ".vjs-big-play-button", "button.vjs-big-play-button"];
-      for (const sel of selectors) {
-        const el = document.querySelector(sel);
-        if (el) {
-          el.click();
-          return `clicked: ${sel}`;
-        }
-      }
-      const vp = document.getElementById("video_player");
-      if (vp) {
-        vp.click();
-        return "clicked: #video_player";
-      }
-      return "no play button found";
-    });
-    log(`click result: ${clickResult}`);
-    log("waiting 45s for Turnstile solve + reload...");
-    const waitStart = Date.now();
-    let passMd5Found = null;
-    let foundAt = 0;
-    let reloadCount = 0;
-    let lastUrl = page.url();
-    while (Date.now() - waitStart < 45e3) {
-      await page.waitForTimeout(2e3);
-      html = await page.content().catch(() => "");
-      const currentUrl = page.url();
-      if (currentUrl !== lastUrl) {
-        reloadCount++;
-        log(`URL CHANGED (#${reloadCount}): ${currentUrl}`);
-        lastUrl = currentUrl;
-      }
-      const m = html.match(/\$\.get\s*\(\s*['"]\/pass_md5\/([^'"]+)['"]\s*,/);
-      if (m) {
-        passMd5Found = m[1];
-        foundAt = Date.now() - waitStart;
-        log(`\u2713 pass_md5 FOUND after ${Math.round(foundAt / 1e3)}s: ${passMd5Found}`);
-        break;
-      }
-      if (html.length > 7e3) {
-        const alt = html.match(/pass_md5\/([^'"\s,\]]+)/);
-        if (alt && !alt[0].includes("function")) {
-          passMd5Found = alt[1];
-          foundAt = Date.now() - waitStart;
-          log(`\u2713 pass_md5 FOUND (alt) after ${Math.round(foundAt / 1e3)}s: ${passMd5Found}`);
-          break;
-        }
-      }
-    }
-    const totalTime = Date.now() - waitStart;
-    html = await page.content();
-    const finalUrl = page.url();
-    const doodRequests = allRequests.filter((r) => r.url.includes("/dood"));
-    const turnstileRequests = allRequests.filter((r) => r.url.includes("turnstile"));
-    await browser.close();
-    res.json({
-      embedUrl,
-      finalUrl,
-      htmlLen: html.length,
-      passMd5: passMd5Found,
-      foundAt: foundAt ? `${foundAt}ms` : null,
-      totalWait: `${totalTime}ms`,
-      reloadCount,
-      doodRequestCount: doodRequests.length,
-      doodRequests: doodRequests.map((r) => `${r.method} ${r.url}`),
-      turnstileRequestCount: turnstileRequests.length,
-      clickedPlay: clickResult,
-      hasTurnstileInHtml: html.toLowerCase().includes("turnstile"),
-      hasPassMd5: html.includes("pass_md5"),
-      logs,
-      allRequests: allRequests.map((r) => `${r.method} ${r.url}`).slice(0, 50)
-    });
-  } catch (err) {
-    log(`ERROR: ${err.message}`);
-    res.status(500).json({ error: err.message, logs });
-  }
-});
-router2.get("/debug/dghg-bypass", async (req, res) => {
-  const linkId = req.query["linkId"];
-  if (!linkId) {
-    res.status(400).json({ error: "Missing linkId" });
-    return;
-  }
-  const logs = [];
-  const log = (msg) => logs.push(`[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}`);
-  try {
-    const { getEmbedUrl: getEmbedUrl2 } = await Promise.resolve().then(() => (init_scraper(), scraper_exports));
-    const sourcesResult = await getEmbedUrl2(linkId);
-    if (!sourcesResult?.url) {
-      res.status(502).json({ error: "no embed URL", logs });
-      return;
-    }
-    const embedUrl = sourcesResult.url;
-    log(`embedUrl: ${embedUrl}`);
-    const urlObj = new URL(embedUrl);
-    const videoId = urlObj.pathname.split("/").pop() || "";
-    const host = urlObj.hostname;
-    log(`videoId: ${videoId}, host: ${host}`);
-    const pw = await import("playwright");
-    const browser = await pw.chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-    });
-    const context = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      extraHTTPHeaders: { Referer: "https://aniwaves.ru/" }
-    });
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, "webdriver", { get: () => false });
-      window.chrome = { runtime: {} };
-    });
-    const page = await context.newPage();
-    let cdnBaseUrl = null;
-    let passMd5Path = null;
-    page.on("response", async (response) => {
-      const url = response.url();
-      if (url.includes("/pass_md5/")) {
-        try {
-          const text = await response.text();
-          cdnBaseUrl = text.trim();
-          const m = url.match(/\/pass_md5\/(.+)/);
-          if (m) passMd5Path = m[1];
-          log(`PASS_MD5: path=${passMd5Path}, cdn=${cdnBaseUrl.slice(0, 100)}`);
-        } catch (e) {
-        }
-      }
-    });
-    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 2e4 }).catch(() => {
-    });
-    let html = await page.content();
-    const initialMatch = html.match(/pass_md5\/([^'"\s,\]]+)/);
-    if (initialMatch) log(`pass_md5 in initial HTML: ${initialMatch[1]}`);
-    const jsCode = await page.evaluate(() => {
-      const scripts = document.querySelectorAll("script");
-      let allJS = "";
-      for (const s of scripts) {
-        allJS += (s.textContent || "") + "\n---\n";
-      }
-      return allJS;
-    });
-    log(`Total JS length: ${jsCode.length}`);
-    const tokenMatches = jsCode.match(/(?:token|key|secret|pass_md5|rand_str|expiry)["'\s:=]+["']?([a-zA-Z0-9_-]{10,})["']?/gi);
-    if (tokenMatches) log(`Token patterns: ${tokenMatches.slice(0, 5).join(" | ")}`);
-    const captchaHandler = jsCode.match(/\.captcha_l[\s\S]{0,500}/);
-    if (captchaHandler) log(`Captcha handler: ${captchaHandler[0].slice(0, 300)}`);
-    const doodPattern = jsCode.match(/\/dood[^\s"'`]+/g);
-    if (doodPattern) log(`Dood endpoints: ${doodPattern.join(", ")}`);
-    const playBtn = await page.$(".captcha_l") || await page.$("#video_player");
-    if (playBtn) {
-      await playBtn.click();
-      log("clicked play");
-    }
-    await page.route("**/dood?op=validate*", async (route) => {
-      log("INTERCEPTED /dood?op=validate \u2014 returning fake success");
-      await route.fulfill({
-        status: 200,
-        contentType: "text/plain",
-        body: "ok"
-      });
-    });
-    for (let i = 0; i < 15; i++) {
-      await page.waitForTimeout(1e3);
-      html = await page.content();
-      const m = html.match(/pass_md5\/([^'"\s,\]]+)/);
-      if (m) {
-        passMd5Path = m[1];
-        log(`pass_md5 found at ${i + 1}s: ${passMd5Path}`);
-        break;
-      }
-    }
-    if (passMd5Path && !cdnBaseUrl) {
-      const passMd5Url = `https://${host}/pass_md5/${passMd5Path}`;
-      log(`Calling pass_md5: ${passMd5Url}`);
-      const passResp = await page.evaluate(async (url) => {
-        const r = await fetch(url);
-        return r.text();
-      }, passMd5Url);
-      cdnBaseUrl = passResp.trim();
-      log(`CDN base: ${cdnBaseUrl.slice(0, 100)}`);
-    }
-    await browser.close();
-    res.json({
-      logs,
-      videoId,
-      host,
-      embedUrl,
-      passMd5Path,
-      cdnBaseUrl,
-      success: !!(passMd5Path && cdnBaseUrl)
-    });
-  } catch (err) {
-    log(`ERROR: ${err.message}`);
-    res.status(500).json({ error: err.message, logs });
-  }
-});
 var anime_default = router2;
 
 // src/routes/index.ts
@@ -2111,7 +1527,6 @@ router3.use(anime_default);
 var routes_default = router3;
 
 // src/app.ts
-init_logger();
 var __dirname = path.dirname(fileURLToPath(import.meta.url));
 var app = express();
 app.use(
@@ -2139,7 +1554,6 @@ app.use((req, res, next) => {
 var app_default = app;
 
 // src/index.ts
-init_logger();
 var rawPort = process.env["PORT"];
 if (!rawPort) {
   throw new Error(
