@@ -354,9 +354,13 @@ export async function getServers(
 
   $(".type").each((_, typeEl) => {
     const $type = $(typeEl);
-    const serverType = ($type.attr("data-type") ?? type) as "sub" | "dub" | "raw";
+    const serverType = ($type.attr("data-type") ?? type) as "sub" | "dub" | "raw" | "ssub";
 
-    if (type !== "raw" && serverType !== type) return;
+    if (type !== "raw" && serverType !== type) {
+      // Also include ssub servers when requesting sub
+      if (type === "sub" && serverType !== "ssub") return;
+      return;
+    }
 
     $type.find("li[data-link-id]").each((_, li) => {
       const $li = $(li);

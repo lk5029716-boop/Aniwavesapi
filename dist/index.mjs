@@ -332,12 +332,16 @@ async function getServers(animeId, ep, type) {
   $(".type").each((_, typeEl) => {
     const $type = $(typeEl);
     const serverType = $type.attr("data-type") ?? type;
-    if (type !== "raw" && serverType !== type) return;
+    if (type !== "raw" && serverType !== type) {
+      if (type === "sub" && serverType !== "ssub") return;
+      return;
+    }
     $type.find("li[data-link-id]").each((_2, li) => {
       const $li = $(li);
       const linkId = $li.attr("data-link-id") ?? "";
       const svId = $li.attr("data-sv-id") ?? "";
       const name = $li.text().trim() || svId;
+      if (name.toLowerCase().includes("dghg")) return;
       if (linkId) {
         servers.push({ id: linkId, name, type: serverType });
       }
