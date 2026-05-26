@@ -36,7 +36,7 @@ export interface Episode {
 export interface Server {
   id: string;
   name: string;
-  type: "sub" | "dub" | "raw";
+  type: "sub" | "dub" | "raw" | "ssub";
 }
 
 export interface StreamSource {

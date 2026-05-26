@@ -109,6 +109,15 @@ export async function getNumericId(animeId: string): Promise<string | null> {
   const cached = cacheGet<string>(cacheKey);
   if (cached) return cached;
 
+  // Fast path: extract trailing number from slug (e.g. "naruto-76396" -> "76396")
+  const slugMatch = animeId.match(/-(\d+)$/);
+  if (slugMatch) {
+    const numericId = slugMatch[1];
+    cacheSet(cacheKey, numericId, 86400);
+    return numericId;
+  }
+
+  // Fallback: fetch watch page and read data-id attribute
   const resp = await client.get(`/watch/${animeId}`);
   const $ = cheerio.load(resp.data as string);
 
@@ -358,8 +367,7 @@ export async function getServers(
 
     if (type !== "raw" && serverType !== type) {
       // Also include ssub servers when requesting sub
-      if (type === "sub" && serverType !== "ssub") return;
-      return;
+      if (!(type === "sub" && serverType === "ssub")) return;
     }
 
     $type.find("li[data-link-id]").each((_, li) => {
