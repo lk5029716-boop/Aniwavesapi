@@ -49,10 +49,23 @@ router.get("/health", async (_req, res) => {
     }
   }
 
+  // Check curl_cffi (Python)
+  let curlCffiAvailable = false;
+  try {
+    execSync("python3 -c 'from curl_cffi import requests; print(\"ok\")'", { encoding: "utf8", timeout: 5000 });
+    curlCffiAvailable = true;
+  } catch {
+    curlCffiAvailable = false;
+  }
+
+  const scraperPath = process.env["ANIWAVES_SCRAPER_PATH"] || "";
+
   res.json({
     status: "ok",
     timestamp: new Date().toISOString(),
     curl: curlAvailable,
+    curlCffi: curlCffiAvailable,
+    scraperPath: scraperPath || "(not set)",
     node: process.version,
     env: process.env.NODE_ENV || "development",
     chromium: chromiumPath || "not found",
