@@ -65,6 +65,18 @@ export async function extractStream(
     return extractEchovideo(embedUrl, skipData);
   }
 
+  // ── DGHG (DoodStream / PlayMogo / myvidplay) ────────────────────────────────
+  // Must be checked BEFORE WeneverBeenFree — both can match myvidplay URLs.
+  if (
+    isDghgServer(serverName) ||
+    isDghgEmbedUrl(embedUrl) ||
+    lowerName.includes("dood") ||
+    lowerName.includes("playmogo")
+  ) {
+    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to DGHG extractor");
+    return extractDghg(embedUrl, skipData);
+  }
+
   // ── WeneverBeenFree ─────────────────────────────────────────────────────────
   // Uses the MegaCloud-style getSources API with key-embedded AES encryption
   if (
@@ -87,17 +99,6 @@ export async function extractStream(
   ) {
     logger.info({ serverName }, "routing to MegaCloud extractor");
     return extractMegacloud(embedUrl);
-  }
-
-  // ── DGHG (DoodStream / PlayMogo / myvidplay) ────────────────────────────────
-  if (
-    isDghgServer(serverName) ||
-    isDghgEmbedUrl(embedUrl) ||
-    lowerName.includes("dood") ||
-    lowerName.includes("playmogo")
-  ) {
-    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to DGHG extractor");
-    return extractDghg(embedUrl, skipData);
   }
 
   // ── Vidplay and mirrors ──────────────────────────────────────────────────────

@@ -128,6 +128,8 @@ router.get("/stream", async (req, res): Promise<void> => {
     return;
   }
 
+  req.log.info({ embedUrl: sourcesResult.url, serverId: serverId.slice(0, 40) }, "resolved embed URL");
+
   const stream = await extractStream(sourcesResult.url, "direct", {
     intro: sourcesResult.skip_data?.intro,
     outro: sourcesResult.skip_data?.outro,
