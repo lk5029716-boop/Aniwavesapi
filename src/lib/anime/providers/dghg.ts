@@ -58,8 +58,8 @@ export async function extractDghg(
         "--disable-gpu",
         "--no-first-run",
         "--no-zygote",
+        "--single-process",
         "--disable-blink-features=AutomationControlled",
-        "--autoplay-policy=no-user-gesture-required",
       ],
     });
 
@@ -107,17 +107,14 @@ export async function extractDghg(
       }
     });
 
-    // Navigate to the embed URL
+    // Navigate to the embed URL — use domcontentloaded (faster than networkidle)
     logger.info({ url: targetUrl.slice(0, 100) }, "[DGHG] navigating to embed URL");
     await page.goto(targetUrl, {
-      waitUntil: "networkidle",
-      timeout: 20_000,
+      waitUntil: "domcontentloaded",
+      timeout: 15_000,
     });
 
-    // Wait a bit for any lazy-loaded requests
-    await page.waitForTimeout(3000);
-
-    // Also try to extract pass_md5 from page HTML
+    // Extract pass_md5 from page HTML immediately
     const pageContent = await page.content();
     const passMd5Match = pageContent.match(/\/pass_md5\/([a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+)/);
     if (passMd5Match) {

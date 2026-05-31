@@ -1,19 +1,16 @@
-FROM mcr.microsoft.com/playwright:v1.60.0-jammy
+FROM node:22-slim
+
+# Install Python + curl_cffi
+RUN apt-get update && apt-get install -y python3 python3-pip && \
+    pip3 install curl_cffi beautifulsoup4 && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build
 
-COPY package.json build.mjs ./
-COPY src/ ./src/
-COPY frontend/ ./frontend/
-
-RUN npm install --ignore-scripts
-
-RUN node build.mjs
-
-EXPOSE 10000
-
-ENV NODE_ENV=production
-ENV PORT=10000
-
+ENV ANIWAVES_SCRAPER_PATH=/app/aniwaves_scraper.py
+EXPOSE 3000
 CMD ["node", "dist/index.mjs"]
-# Cache bust 1779580000
