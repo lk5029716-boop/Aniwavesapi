@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Install Python3 + create venv + install curl_cffi (all in one layer)
+# Install Python3 + venv + curl_cffi
 RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-venv \
     libffi-dev \
@@ -12,9 +12,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
-# Node.js deps
+# Node.js deps (no Playwright Chromium needed for DGHG)
 COPY package*.json ./
-RUN npm install && npx playwright install chromium
+RUN npm install
 
 # App source
 COPY . .

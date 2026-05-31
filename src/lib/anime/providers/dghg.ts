@@ -1,25 +1,19 @@
 /**
  * DGHG (DoodStream / PlayMogo / myvidplay) extractor.
  *
- * NOTE: DGHG requires TLS fingerprint impersonation (Chrome JA3/JA4)
- * to bypass Cloudflare on playmogo.com. This only works with curl_cffi
- * from a non-cloud IP. Render free tier blocks both conditions:
- *   - No Python/curl_cffi in the Node.js runtime image
- *   - playmogo.com blocks Render datacenter IPs
+ * Uses curl_cffi (Chrome TLS impersonation) via Python subprocess to bypass
+ * Cloudflare JA3/JA4 checks on playmogo.com / myvidplay.com.
  *
- * This extractor will return null immediately so the fallback chain
- * continues to the next provider. DGHG only works with a proxy or
- * from a residential IP with curl_cffi installed.
- *
- * To enable: set ANIWAVES_SCRAPER_PATH env var on a deployment that
- * has Python + curl_cffi and a non-blocked IP.
+ * Extraction chain:
+ *   1. Fetch embed page with curl_cffi (Chrome impersonation)
+ *   2. Extract /pass_md5/<hash>/<token> from page HTML
+ *   3. Call /pass_md5/<hash>/<token> → get base CDN URL
+ *   4. Return base + /index-f1-v1-a1.m3u8
  */
 
 import { execFileSync } from "child_process";
 import { logger } from "../../logger.js";
 import type { StreamSource, SkipTime } from "../types.js";
-
-const ANIWAVES_SCRAPER = process.env["ANIWAVES_SCRAPER_PATH"] ?? "";
 
 type DghgScriptResult =
   | { ok: true; m3u8: string; referer: string; expiry: number }
@@ -34,22 +28,43 @@ export function isDghgEmbedUrl(url: string): boolean {
   }
 }
 
+export function isDghgServer(serverName: string): boolean {
+  const n = serverName.toLowerCase();
+  return n.includes("dghg") || n.includes("dood") || n.includes("playmogo");
+}
+
 export async function extractDghg(
   embedUrl: string,
   skipData?: { intro?: [number, number]; outro?: [number, number] }
 ): Promise<StreamSource | null> {
   logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] start");
 
-  if (!ANIWAVES_SCRAPER) {
-    logger.info("[DGHG] ANIWAVES_SCRAPER_PATH not set, skipping");
-    return null;
+  // Try multiple possible scraper paths (Render env var, Docker default, relative)
+  const envPath = process.env["ANIWAVES_SCRAPER_PATH"];
+  const candidatePaths = [
+    envPath,
+    "/app/aniwaves_scraper.py",
+    "/opt/render/project/src/aniwaves_scraper.py",
+    "aniwaves_scraper.py",
+  ].filter(Boolean) as string[];
+
+  let scraperPath = candidatePaths[0] ?? "/app/aniwaves_scraper.py";
+  for (const p of candidatePaths) {
+    try {
+      execFileSync("test", ["-f", p], { timeout: 3000 });
+      scraperPath = p;
+      logger.info({ scraperPath }, "[DGHG] found scraper at");
+      break;
+    } catch {
+      continue;
+    }
   }
 
   try {
     const result = execFileSync(
       "python3",
-      [ANIWAVES_SCRAPER, "--server", embedUrl],
-      { timeout: 12_000, encoding: "utf8", env: { ...process.env } }
+      [scraperPath, "--server", embedUrl],
+      { timeout: 15_000, encoding: "utf8", env: { ...process.env } }
     ).trim();
 
     const parsed = JSON.parse(result) as DghgScriptResult;
@@ -82,14 +97,9 @@ export async function extractDghg(
   } catch (err) {
     const e = err as Error & { stderr?: Buffer; status?: number };
     logger.warn(
-      { error: e.message.slice(0, 120), stderr: e.stderr?.toString().slice(0, 100) },
+      { error: e.message.slice(0, 120), stderr: e.stderr?.toString().slice(0, 200) },
       "[DGHG] error, skipping"
     );
     return null;
   }
-}
-
-export function isDghgServer(serverName: string): boolean {
-  const n = serverName.toLowerCase();
-  return n.includes("dghg") || n.includes("dood") || n.includes("playmogo");
 }
