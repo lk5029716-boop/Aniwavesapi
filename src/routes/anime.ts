@@ -142,66 +142,6 @@ res.status(502).json({ error: "Stream extraction failed from serverId" });
 });
 
 /**
- * GET /api/test-dghg — debug DGHG extraction timing from Render
- */
-router.get("/test-dghg", async (_req, res): Promise<void> => {
-  const logs: string[] = [];
-  const t0 = Date.now();
-  const log = (msg: string) => { logs.push(`[${Date.now() - t0}ms] ${msg}`); };
-
-  try {
-    log("Starting DGHG debug test");
-
-    // Step 1: Simple fetch to playmogo
-    log("Testing plain fetch to playmogo...");
-    try {
-      const r = await fetch("https://playmogo.com/e/cn3fn0zskodx", {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-          Referer: "https://aniwaves.ru/",
-        },
-        signal: AbortSignal.timeout(8000),
-      });
-      log(`Plain fetch: HTTP ${r.status}`);
-    } catch (e) {
-      log(`Plain fetch error: ${(e as Error).message}`);
-    }
-
-    // Step 2: Python scraper test
-    log("Testing Python scraper...");
-    try {
-      const { execSync } = await import("child_process");
-      const pyResult = execSync(
-        'python3 -c "from curl_cffi import requests; print(\\"curl_cffi OK\\")"',
-        { encoding: "utf8", timeout: 5000 }
-      ).trim();
-      log(`Python: ${pyResult}`);
-    } catch (e) {
-      log(`Python error: ${(e as Error).message}`);
-    }
-
-    // Step 3: curl_cffi direct test
-    log("Testing curl_cffi direct extraction...");
-    try {
-      const { execSync } = await import("child_process");
-      const result = execSync(
-        'python3 -c "\nfrom curl_cffi import requests\ns = requests.Session(impersonate=\\"chrome124\\")\nr = s.get(\\"https://playmogo.com/e/cn3fn0zskodx\\", timeout=8)\nprint(f\\\"Status: {r.status_code}\\\")\nprint(r.text[:200])\n"',
-        { encoding: "utf8", timeout: 15000 }
-      ).trim();
-      log(`curl_cffi result:\n${result}`);
-    } catch (e) {
-      log(`curl_cffi error: ${(e as Error).message}`);
-    }
-
-    log("Done");
-    res.json({ logs, elapsed: Date.now() - t0 });
-  } catch (e) {
-    log(`Fatal: ${(e as Error).message}`);
-    res.json({ logs, elapsed: Date.now() - t0, error: (e as Error).message });
-  }
-});
-
-/**
  * GET /api/proxy?url=https://...&referer=https://...
  */
 router.get("/proxy", async (req, res): Promise<void> => {
