@@ -3,6 +3,7 @@ import { extractVidplay, isVidplayHost } from "./vidplay.js";
 import { extractMegacloud, isMegacloudHost } from "./megacloud.js";
 import { extractEchovideo, isEchovideoHost } from "./echovideo.js";
 import { extractWeneverbeenfree, isWeneverbeenfreeHost } from "./weneverbeenfree.js";
+import { extractDghg, isDghgServer } from "./dghg.js";
 import type { StreamSource } from "../types.js";
 
 /** Hosts that are Vidplay clones/mirrors */
@@ -88,6 +89,17 @@ export async function extractStream(
     return extractMegacloud(embedUrl);
   }
 
+  // ── DGHG (DoodStream / PlayMogo / myvidplay) ────────────────────────────────
+  if (
+    isDghgServer(serverName) ||
+    isDghgEmbedUrl(embedUrl) ||
+    lowerName.includes("dood") ||
+    lowerName.includes("playmogo")
+  ) {
+    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to DGHG extractor");
+    return extractDghg(embedUrl, skipData);
+  }
+
   // ── Vidplay and mirrors ──────────────────────────────────────────────────────
   if (
     matchHost(embedUrl, VIDPLAY_LIKE_HOSTS) ||
@@ -126,6 +138,7 @@ export async function extractStream(
   logger.warn({ serverName }, "trying all extractors in sequence as last resort");
 
   const attempts = [
+    () => extractDghg(embedUrl, skipData),
     () => extractWeneverbeenfree(embedUrl, skipData),
     () => extractEchovideo(embedUrl, skipData),
     () => extractMegacloud(embedUrl),

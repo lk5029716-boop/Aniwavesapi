@@ -376,8 +376,8 @@ export async function getServers(
       const svId = $li.attr("data-sv-id") ?? "";
       const name = $li.text().trim() || svId;
 
-      // Filter out DGHG (Turnstile-protected, no server-side extraction)
-      if (name.toLowerCase().includes("dghg")) return;
+      // DGHG (DoodStream/PlayMogo) — now supported via curl_cffi + Playwright fallback
+      // No longer filtered out
 
       if (linkId) {
         servers.push({ id: linkId, name, type: serverType });

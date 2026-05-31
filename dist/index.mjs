@@ -159,6 +159,12 @@ async function getNumericId(animeId) {
   const cacheKey = `numericId:${animeId}`;
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
+  const slugMatch = animeId.match(/-(\d+)$/);
+  if (slugMatch) {
+    const numericId2 = slugMatch[1];
+    cacheSet(cacheKey, numericId2, 86400);
+    return numericId2;
+  }
   const resp = await client.get(`/watch/${animeId}`);
   const $ = cheerio.load(resp.data);
   const numericId = $("[data-id]").first().attr("data-id") ?? null;
@@ -333,15 +339,13 @@ async function getServers(animeId, ep, type) {
     const $type = $(typeEl);
     const serverType = $type.attr("data-type") ?? type;
     if (type !== "raw" && serverType !== type) {
-      if (type === "sub" && serverType !== "ssub") return;
-      return;
+      if (!(type === "sub" && serverType === "ssub")) return;
     }
     $type.find("li[data-link-id]").each((_2, li) => {
       const $li = $(li);
       const linkId = $li.attr("data-link-id") ?? "";
       const svId = $li.attr("data-sv-id") ?? "";
       const name = $li.text().trim() || svId;
-      if (name.toLowerCase().includes("dghg")) return;
       if (linkId) {
         servers.push({ id: linkId, name, type: serverType });
       }
@@ -1261,6 +1265,97 @@ function isWeneverbeenfreeHost(url) {
   }
 }
 
+// src/lib/anime/providers/dghg.ts
+import { execFileSync } from "child_process";
+var ANIWAVES_SCRAPER = process.env["ANIWAVES_SCRAPER_PATH"] ?? "";
+function isPlayMogoHost(url) {
+  try {
+    return new URL(url).hostname.includes("playmogo");
+  } catch {
+    return false;
+  }
+}
+async function extractDghg(embedUrl, skipData) {
+  const playMogoUrl = isPlayMogoHost(embedUrl) ? embedUrl : null;
+  const targetUrl = playMogoUrl ?? embedUrl;
+  logger.info(
+    { embedUrl: embedUrl.slice(0, 100), targetUrl: targetUrl.slice(0, 100) },
+    "[DGHG] starting extraction"
+  );
+  if (ANIWAVES_SCRAPER) {
+    try {
+      const result = execFileSync(
+        "python3",
+        [ANIWAVES_SCRAPER, "--server", targetUrl],
+        {
+          timeout: 3e4,
+          encoding: "utf8",
+          env: { ...process.env }
+        }
+      ).trim();
+      const parsed = JSON.parse(result);
+      if (parsed.ok) {
+        logger.info(
+          { m3u8: parsed.m3u8.slice(0, 100) },
+          "[DGHG] curl_cffi extraction SUCCESS"
+        );
+        let intro = null;
+        let outro = null;
+        if (skipData?.intro && (skipData.intro[0] !== 0 || skipData.intro[1] !== 0)) {
+          intro = { start: skipData.intro[0], end: skipData.intro[1] };
+        }
+        if (skipData?.outro && (skipData.outro[0] !== 0 || skipData.outro[1] !== 0)) {
+          outro = { start: skipData.outro[0], end: skipData.outro[1] };
+        }
+        return {
+          type: "direct",
+          provider: "dghg",
+          m3u8: parsed.m3u8,
+          subtitles: [],
+          thumbnails: null,
+          intro,
+          outro
+        };
+      }
+      logger.warn(
+        { error: parsed.error },
+        "[DGHG] curl_cffi extraction failed, falling back to Playwright"
+      );
+    } catch (err) {
+      const e = err;
+      logger.warn(
+        {
+          error: e.message,
+          stderr: e.stderr?.toString().slice(0, 200),
+          status: e.status
+        },
+        "[DGHG] curl_cffi subprocess failed, falling back to Playwright"
+      );
+    }
+  }
+  logger.info(
+    { embedUrl: embedUrl.slice(0, 100) },
+    "[DGHG] falling back to Playwright (Chromium)"
+  );
+  const pwResult = await extractViaPlaywright(embedUrl, "dghg", skipData);
+  if (pwResult?.m3u8) {
+    logger.info(
+      { m3u8: pwResult.m3u8.slice(0, 100) },
+      "[DGHG] Playwright extraction SUCCESS"
+    );
+    return pwResult;
+  }
+  logger.error(
+    { embedUrl: embedUrl.slice(0, 100) },
+    "[DGHG] all extraction methods failed"
+  );
+  return null;
+}
+function isDghgServer(serverName) {
+  const n = serverName.toLowerCase();
+  return n.includes("dghg") || n.includes("dood") || n.includes("playmogo");
+}
+
 // src/lib/anime/providers/index.ts
 var VIDPLAY_LIKE_HOSTS = [
   "vidplay.online",
@@ -1308,6 +1403,10 @@ async function extractStream(embedUrl, serverName, skipData, proxyUrl) {
     logger.info({ serverName }, "routing to MegaCloud extractor");
     return extractMegacloud(embedUrl);
   }
+  if (isDghgServer(serverName) || isDghgEmbedUrl(embedUrl) || lowerName.includes("dood") || lowerName.includes("playmogo")) {
+    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to DGHG extractor");
+    return extractDghg(embedUrl, skipData);
+  }
   if (matchHost(embedUrl, VIDPLAY_LIKE_HOSTS) || isVidplayHost(embedUrl) || lowerName.includes("vidplay") || lowerName.includes("vidcloud")) {
     logger.info({ serverName }, "routing to Vidplay extractor");
     return extractVidplay(embedUrl);
@@ -1330,6 +1429,7 @@ async function extractStream(embedUrl, serverName, skipData, proxyUrl) {
   }
   logger.warn({ serverName }, "trying all extractors in sequence as last resort");
   const attempts = [
+    () => extractDghg(embedUrl, skipData),
     () => extractWeneverbeenfree(embedUrl, skipData),
     () => extractEchovideo(embedUrl, skipData),
     () => extractMegacloud(embedUrl),
