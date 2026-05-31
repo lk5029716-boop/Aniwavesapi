@@ -140,7 +140,42 @@ router.get("/stream", async (req, res): Promise<void> => {
     return;
   }
 
-res.status(502).json({ error: "Stream extraction failed from serverId" });
+  res.status(502).json({ error: "Stream extraction failed from serverId" });
+});
+
+/**
+ * GET /api/debug-dghg?embedUrl=...
+ * Directly calls the Python scraper for DGHG extraction
+ */
+router.get("/debug-dghg", async (req, res): Promise<void> => {
+  const embedUrl = req.query["embedUrl"];
+  if (!embedUrl || typeof embedUrl !== "string") {
+    res.status(400).json({ error: "embedUrl query param required" });
+    return;
+  }
+
+  const scraperPath = process.env["ANIWAVES_SCRAPER_PATH"] || "/opt/render/project/src/aniwaves_scraper.py";
+
+  try {
+    const { execFileSync } = await import("child_process");
+    const result = execFileSync(
+      "python3",
+      [scraperPath, "--server", embedUrl],
+      { timeout: 30_000, encoding: "utf8", env: { ...process.env } }
+    ).trim();
+    const parsed = JSON.parse(result);
+    res.json({ ok: true, result: parsed });
+  } catch (err) {
+    const e = err as Error & { stderr?: Buffer; status?: number };
+    res.status(502).json({
+      ok: false,
+      error: e.message,
+      stderr: e.stderr?.toString().slice(0, 500),
+      status: e.status,
+      scraperPath,
+      embedUrl: embedUrl.slice(0, 100),
+    });
+  }
 });
 
 /**
