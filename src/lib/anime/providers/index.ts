@@ -3,7 +3,7 @@ import { extractVidplay, isVidplayHost } from "./vidplay.js";
 import { extractMegacloud, isMegacloudHost } from "./megacloud.js";
 import { extractEchovideo, isEchovideoHost } from "./echovideo.js";
 import { extractWeneverbeenfree, isWeneverbeenfreeHost } from "./weneverbeenfree.js";
-import { extractDghg, isDghgServer } from "./dghg.js";
+import { extractDghg, isDghgServer, isDghgEmbedUrl } from "./dghg.js";
 import type { StreamSource } from "../types.js";
 
 /** Hosts that are Vidplay clones/mirrors */

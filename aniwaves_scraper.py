@@ -97,6 +97,34 @@ def episode_streams(anime_id: int, ep: int):
 
 if __name__ == "__main__":
     import sys
+    # Mode 1: --server <embed_url>  → resolve a single embed URL (used by dghg.ts)
+    if "--server" in sys.argv:
+        url_idx = sys.argv.index("--server") + 1
+        if url_idx < len(sys.argv):
+            embed_url = sys.argv[url_idx]
+            s = new_session()
+            try:
+                data = resolve_m3u8(s, embed_url)
+                # Extract m3u8 from sources or raw
+                m3u8 = None
+                if isinstance(data, dict):
+                    sources = data.get("sources", [])
+                    if sources and isinstance(sources[0], dict):
+                        m3u8 = sources[0].get("file") or sources[0].get("src")
+                    if not m3u8 and "raw" in data:
+                        raw = data["raw"]
+                        base = raw.rsplit("/", 1)[0]
+                        m3u8 = base + "/index-f1-v1-a1.m3u8"
+                if not m3u8:
+                    m3u8 = embed_url
+                print(json.dumps({"ok": True, "m3u8": m3u8, "referer": embed_url, "expiry": int(time.time() * 1000) + 3600000}))
+            except Exception as e:
+                print(json.dumps({"ok": False, "error": str(e)}))
+        else:
+            print(json.dumps({"ok": False, "error": "missing URL after --server"}))
+        sys.exit(0)
+
+    # Mode 2: <anime_id> <ep>  → full episode scan
     aid = int(sys.argv[1]) if len(sys.argv) > 1 else 82499
     ep  = int(sys.argv[2]) if len(sys.argv) > 2 else 1
     print(json.dumps(episode_streams(aid, ep), indent=2)[:4000])
