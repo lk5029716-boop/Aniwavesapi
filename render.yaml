@@ -1,7 +1,15 @@
-services:
-  - type: web
-    name: aniwavesapis
-    runtime: docker
-    region: oregon
-    plan: free
-    healthCheckPath: /api/health
+{
+  "version": 2,
+  "services": [
+    {
+      "type": "web",
+      "name": "aniwavesapis",
+      "env": "node",
+      "buildCommand": "pip3 install curl_cffi beautifulsoup4 && npm install && npm run build",
+      "startCommand": "node dist/index.mjs",
+      "envVars": [
+        { "key": "ANIWAVES_SCRAPER_PATH", "value": "/opt/render/project/src/aniwaves_scraper.py" }
+      ]
+    }
+  ]
+}
