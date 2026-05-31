@@ -12,7 +12,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
-# Node.js deps (no Playwright Chromium needed for DGHG)
+# Node.js deps
 COPY package*.json ./
 RUN npm install
 
@@ -20,7 +20,10 @@ RUN npm install
 COPY . .
 RUN npm run build
 
-ENV ANIWAVES_SCRAPER_PATH=/app/aniwaves_scraper.py
+# Also copy scraper to Render's expected path
+RUN mkdir -p /opt/render/project/src && cp /app/aniwaves_scraper.py /opt/render/project/src/aniwaves_scraper.py
+
+ENV ANIWAVES_SCRAPER_PATH=/opt/render/project/src/aniwaves_scraper.py
 ENV NODE_ENV=production
 
 EXPOSE 3000
