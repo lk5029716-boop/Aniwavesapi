@@ -12,13 +12,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
+# Node.js deps
 COPY package*.json ./
 RUN npm install && npx playwright install chromium
 
+# App source
 COPY . .
 RUN npm run build
 
 ENV ANIWAVES_SCRAPER_PATH=/app/aniwaves_scraper.py
+ENV NODE_ENV=production
 
 EXPOSE 3000
 CMD ["node", "dist/index.mjs"]
