@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node build.mjs",
+    "build": "pip install -r requirements.txt 2>/dev/null; node build.mjs",
     "start": "node dist/index.mjs",
     "dev": "node build.mjs && node dist/index.mjs",
     "postinstall": "npx playwright install chromium 2>/dev/null || echo 'Playwright install skipped'"
@@ -28,6 +28,6 @@
     "@types/crypto-js": "^4.2.2",
     "@types/express": "^5.0.6",
     "@types/node": "^22.0.0",
-    "esbuild": "0.25.8"
+    "esbuild": "^0.25.8"
   }
 }
