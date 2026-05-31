@@ -58,7 +58,7 @@ def resolve_m3u8(s, embed_url: str):
         "Accept": "application/json, text/plain, */*",
     }
 
-    # mediainfo (some builds) + pass_md5 (rabbitstream-style)
+    # mediainfo (some builds) + getSources (rabbitstream-style)
     info = None
     for path in (f"/mediainfo/{key}", f"/ajax/embed-1/getSources?id={key}"):
         try:
@@ -72,16 +72,27 @@ def resolve_m3u8(s, embed_url: str):
     if info and "sources" in info:
         return info  # already decoded JSON with sources/tracks
 
-    # fallback: pass_md5 returns a redirect chain or the m3u8 URL directly
-    r = s.get(f"{origin}/pass_md5/{key}", headers=headers, timeout=15,
-              allow_redirects=True)
-    if r.status_code == 200:
-        txt = r.text.strip()
-        if txt.startswith("http"):
-            base = txt.rsplit("/", 1)[0]
-            return {"sources": [{"file": base + "/index-f1-v1-a1.m3u8",
-                                 "type": "hls"}], "raw": txt}
-    raise RuntimeError(f"player {origin} did not return sources (status {r.status_code})")
+    # DGHG / playmogo: must extract pass_md5 hash+token from page HTML
+    # then call /pass_md5/<hash>/<token> to get base CDN URL
+    page_r = s.get(embed_url, headers={"Referer": BASE + "/"}, timeout=15)
+    if page_r.status_code == 200:
+        # Look for /pass_md5/<hash>/<token> in the page
+        m = re.search(r"/pass_md5/([a-f0-9]{32})/([a-zA-Z0-9_-]+)", page_r.text)
+        if m:
+            md5_hash = m.group(1)
+            token = m.group(2)
+            pass_r = s.get(
+                f"{origin}/pass_md5/{md5_hash}/{token}",
+                headers=headers, timeout=15, allow_redirects=True,
+            )
+            if pass_r.status_code == 200:
+                txt = pass_r.text.strip()
+                if txt.startswith("http"):
+                    # txt is the base CDN URL
+                    return {"sources": [{"file": txt + "/index-f1-v1-a1.m3u8",
+                                         "type": "hls"}], "raw": txt, "token": token}
+
+    raise RuntimeError(f"player {origin} did not return sources (status {page_r.status_code})")
 
 def episode_streams(anime_id: int, ep: int):
     s = new_session()
