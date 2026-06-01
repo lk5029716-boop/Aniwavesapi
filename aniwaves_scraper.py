@@ -6,13 +6,15 @@ Requires: pip install curl_cffi beautifulsoup4
 Why curl_cffi: it impersonates Chrome's TLS + HTTP/2 fingerprint, which is what
 CF actually checks on /pass_md5/. Works from datacenter IPs.
 """
-import re, json, base64, time
+import re, json, base64, time, os, logging
 from urllib.parse import urlparse, urljoin
 from curl_cffi import requests as cffi
 from bs4 import BeautifulSoup
 
 BASE = "https://aniwaves.ru"
 IMPERSONATE = "chrome124"
+
+logger = logging.getLogger(__name__)
 
 def new_session():
     s = cffi.Session(impersonate=IMPERSONATE)
@@ -44,10 +46,27 @@ def get_embed_url(s, link_id: str):
     return r.json()["result"]["url"]   # https://play.echovideo.ru/embed-1/<key>?...
 
 def resolve_m3u8(s, embed_url: str):
-    """Hit the player domain directly. curl_cffi handles the CF TLS check."""
+    """Hit the player domain directly. curl_cffi handles the CF TLS check.
+    If ANIWAVES_PROXY_URL is set, route myvidplay/playmogo requests through it."""
+    
+    proxy_url = os.environ.get("ANIWAVES_PROXY_URL")
     pu = urlparse(embed_url)
     origin = f"{pu.scheme}://{pu.netloc}"
     key = pu.path.rsplit("/", 1)[-1]
+    
+    # Determine if this host needs proxying
+    needs_proxy = proxy_url and any(
+        h in pu.hostname for h in ("myvidplay", "playmogo")
+    )
+    
+    def proxied_get(url, **kwargs):
+        """Route request through CF Worker proxy if needed."""
+        if needs_proxy and any(h in url for h in ("myvidplay", "playmogo")):
+            separator = "&" if "?" in proxy_url else "?"
+            proxy_target = f"{proxy_url}{separator}url={url}"
+            logger.debug(f"[proxy] routing via CF Worker: {url[:80]}")
+            return s.get(proxy_target, **kwargs)
+        return s.get(url, **kwargs)
 
     # warm up cookies on player origin
     s.get(embed_url, headers={"Referer": BASE + "/"})
@@ -62,7 +81,7 @@ def resolve_m3u8(s, embed_url: str):
     info = None
     for path in (f"/mediainfo/{key}", f"/ajax/embed-1/getSources?id={key}"):
         try:
-            r = s.get(origin + path, headers=headers, timeout=15)
+            r = proxied_get(origin + path, headers=headers, timeout=15)
             if r.status_code == 200 and r.text.strip().startswith(("{", "[")):
                 info = r.json()
                 break
@@ -74,14 +93,14 @@ def resolve_m3u8(s, embed_url: str):
 
     # DGHG / playmogo: must extract pass_md5 hash+token from page HTML
     # then call /pass_md5/<hash>/<token> to get base CDN URL
-    page_r = s.get(embed_url, headers={"Referer": BASE + "/"}, timeout=15)
+    page_r = proxied_get(embed_url, headers={"Referer": BASE + "/"}, timeout=15)
     if page_r.status_code == 200:
         # Look for /pass_md5/<hash>/<token> in the page
         m = re.search(r"/pass_md5/([a-f0-9]{32})/([a-zA-Z0-9_-]+)", page_r.text)
         if m:
             md5_hash = m.group(1)
             token = m.group(2)
-            pass_r = s.get(
+            pass_r = proxied_get(
                 f"{origin}/pass_md5/{md5_hash}/{token}",
                 headers=headers, timeout=15, allow_redirects=True,
             )
