@@ -35,7 +35,8 @@ export function isDghgServer(serverName: string): boolean {
 
 export async function extractDghg(
   embedUrl: string,
-  skipData?: { intro?: [number, number]; outro?: [number, number] }
+  skipData?: { intro?: [number, number]; outro?: [number, number] },
+  proxyUrl?: string | null
 ): Promise<StreamSource | null> {
   logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] start");
 
@@ -61,10 +62,15 @@ export async function extractDghg(
   }
 
   try {
+    const env = { ...process.env };
+    if (proxyUrl) {
+      env["ANIWAVES_PROXY_URL"] = proxyUrl;
+      logger.info({ proxyUrl: proxyUrl.slice(0, 60) }, "[DGHG] using proxy");
+    }
     const result = execFileSync(
       "python3",
       [scraperPath, "--server", embedUrl],
-      { timeout: 15_000, encoding: "utf8", env: { ...process.env } }
+      { timeout: 15_000, encoding: "utf8", env }
     ).trim();
 
     const parsed = JSON.parse(result) as DghgScriptResult;
