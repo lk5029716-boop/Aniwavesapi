@@ -74,7 +74,7 @@ export async function extractStream(
     lowerName.includes("playmogo")
   ) {
     logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to DGHG extractor");
-    return extractDghg(embedUrl, skipData);
+    return extractDghg(embedUrl, skipData, proxyUrl);
   }
 
   // ── WeneverBeenFree ─────────────────────────────────────────────────────────
