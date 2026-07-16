@@ -1316,17 +1316,269 @@ function isEchovideoHost(url) {
 }
 
 // src/lib/anime/providers/weneverbeenfree.ts
+import https2 from "https";
+var UA2 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+var ANIWAVES_REFERER2 = "https://aniwaves.ru/";
+var ANIWAVES_ORIGIN2 = "https://aniwaves.ru";
+var BE = 512;
+var DR = 2;
+var LR = 2654435761;
+var HR = 2246822519;
+var rotl = (t, e) => (t << e | t >>> 32 - e) >>> 0;
+var mul32 = (t, e) => Math.imul(t, e) >>> 0;
+function ye(t) {
+  t[0] = t[0] + t[1] >>> 0;
+  t[3] = rotl(t[3] ^ t[0], 16);
+  t[2] = t[2] + t[3] >>> 0;
+  t[1] = rotl(t[1] ^ t[2], 12);
+  t[0] = t[0] + t[1] >>> 0;
+  t[3] = rotl(t[3] ^ t[0], 8);
+  t[2] = t[2] + t[3] >>> 0;
+  t[1] = rotl(t[1] ^ t[2], 7);
+}
+function gr(t) {
+  const e = new Uint32Array([1779033703, 3144134277, 1013904242, 2773480762]);
+  for (let i = 0; i < t.length; i++) {
+    e[0] = e[0] + t[i] >>> 0;
+    e[0] = rotl(e[0], 7);
+    ye(e);
+  }
+  for (let i = 0; i < 8; i++) ye(e);
+  const r = new Uint32Array(BE);
+  for (let i = 0; i < BE; i++) {
+    ye(e);
+    r[i] = (e[0] ^ e[2]) >>> 0;
+  }
+  for (let i = 0; i < DR; i++)
+    for (let s = 0; s < BE; s++) {
+      const a = r[s] & BE - 1;
+      let c = r[s] + r[a] >>> 0;
+      c = rotl(c, 13);
+      c = (c ^ mul32(r[s + 1 & BE - 1], LR)) >>> 0;
+      r[s] = c;
+      e[0] = (e[0] ^ c) >>> 0;
+      ye(e);
+    }
+  const n = new Uint32Array(8), o = BE / 8;
+  for (let i = 0; i < 8; i++) {
+    ye(e);
+    let s = e[0];
+    const a = i * o;
+    for (let c = 0; c < o; c++) {
+      const d = r[a + c];
+      s = s + d >>> 0;
+      s = rotl(s, 5);
+      s = (s ^ mul32(d, HR)) >>> 0;
+    }
+    n[i] = (s ^ e[2]) >>> 0;
+  }
+  return n;
+}
+function yr(str) {
+  const e = new Uint8Array(str.length);
+  for (let r = 0; r < str.length; r++) e[r] = str.charCodeAt(r) & 255;
+  return e;
+}
+function wr(t) {
+  let e = 0;
+  for (let r = 0; r < t.length; r++) {
+    const n = t[r];
+    if (n === 0) {
+      e += 32;
+      continue;
+    }
+    return e + Math.clz32(n);
+  }
+  return e;
+}
+function minePoW(nonce, difficulty, timeoutMs = 2e4) {
+  const start = Date.now();
+  let s = 0;
+  while (Date.now() - start < timeoutMs) {
+    if (wr(gr(yr(`${nonce}:${s}`))) >= difficulty) return String(s);
+    s++;
+  }
+  return null;
+}
+function b64urlToBytes(s) {
+  const pad = s.replace(/-/g, "+").replace(/_/g, "/");
+  const rem = pad.length % 4;
+  const p = rem ? pad + "=".repeat(4 - rem) : pad;
+  return Uint8Array.from(Buffer.from(p, "base64"));
+}
+function Qa() {
+  const e = {};
+  for (let n = 1; n <= 20; n += 1) {
+    const o = n ^ 0, a = 31 - n ^ 0;
+    e[String(n)] = [o, a];
+  }
+  return e;
+}
+function Ea(version, total) {
+  const r = typeof version === "string" ? version.trim() : "";
+  const o = Qa()[r];
+  if (!o) return [0, 0];
+  const [a, i] = o;
+  return a < 1 || i < 1 || a > total || i > total ? [0, 0] : [a, i];
+}
+function ws(playback) {
+  const t = Array.isArray(playback.key_parts) ? playback.key_parts : [];
+  const [a, i] = Ea(playback.version, t.length);
+  if (a === 0 && i === 0) return t;
+  const n = [a, i].map((o) => Number(o)).filter((o) => Number.isInteger(o) && o >= 1 && o <= t.length).map((o) => t[o - 1]).filter((o) => typeof o === "string" && o.length > 0);
+  return n.length > 0 ? n : t;
+}
+function ks(parts) {
+  const t = parts.filter((a) => typeof a === "string" && a.length > 0).map(b64urlToBytes);
+  const r = t.reduce((a, i) => a + i.length, 0);
+  const n = new Uint8Array(r);
+  let o = 0;
+  for (const a of t) {
+    n.set(a, o);
+    o += a.length;
+  }
+  return n;
+}
+async function decryptPlayback(playback) {
+  const key = ks(ws(playback));
+  const iv = b64urlToBytes(playback.iv);
+  const ct = b64urlToBytes(playback.payload);
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return null;
+  try {
+    const cryptoKey = await subtle.importKey("raw", key, "AES-GCM", false, ["decrypt"]);
+    const plain = await subtle.decrypt({ name: "AES-GCM", iv }, cryptoKey, ct);
+    return new TextDecoder().decode(plain);
+  } catch (err) {
+    logger.warn({ error: err.message }, "[WNBF] AES-GCM decrypt failed");
+    return null;
+  }
+}
+function postJson(host, path2, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const req = https2.request(
+      {
+        hostname: host,
+        path: path2,
+        method: "POST",
+        headers: {
+          "User-Agent": UA2,
+          "Content-Type": "application/json",
+          "Referer": ANIWAVES_REFERER2,
+          "Origin": ANIWAVES_ORIGIN2,
+          "Accept": "application/json",
+          ...headers,
+          "Content-Length": Buffer.byteLength(data)
+        }
+      },
+      (res) => {
+        let d = "";
+        res.on("data", (c) => d += c.toString());
+        res.on("end", () => {
+          let json;
+          try {
+            json = JSON.parse(d);
+          } catch {
+            json = d;
+          }
+          resolve({ status: res.statusCode ?? 0, body: json });
+        });
+      }
+    );
+    req.on("error", reject);
+    req.write(data);
+    req.end();
+  });
+}
 async function extractWeneverbeenfree(embedUrl, skipData) {
-  logger.info(
-    { embedUrl: embedUrl.slice(0, 90) },
-    "[WNBF] using Playwright headless browser extractor (Byse CDN)"
-  );
-  return extractViaPlaywright(embedUrl, "weneverbeenfree", skipData);
+  let videoId = null;
+  let host = null;
+  try {
+    const u = new URL(embedUrl);
+    host = u.hostname;
+    const m = u.pathname.match(/\/e\/([A-Za-z0-9_-]+)/);
+    if (m) videoId = m[1];
+  } catch {
+    logger.error({ embedUrl }, "[WNBF] invalid embed URL");
+    return null;
+  }
+  if (!videoId || !host) {
+    logger.error({ embedUrl }, "[WNBF] could not parse video id from embed URL");
+    return null;
+  }
+  logger.info({ videoId, host }, "[WNBF] starting PoW-gated extraction");
+  try {
+    const c = await postJson(host, `/api/videos/${videoId}/captcha`, {});
+    if (c.status !== 200 || !c.body?.pow_nonce) {
+      logger.error({ status: c.status, body: JSON.stringify(c.body).slice(0, 120) }, "[WNBF] captcha challenge failed");
+      return null;
+    }
+    const { pow_nonce, pow_difficulty, pow_token } = c.body;
+    const solution = minePoW(pow_nonce, pow_difficulty);
+    if (!solution) {
+      logger.error("[WNBF] PoW mining timed out");
+      return null;
+    }
+    const v = await postJson(host, `/api/videos/${videoId}/captcha/verify`, {
+      pow_token,
+      solution
+    });
+    if (v.status !== 200 || v.body?.status !== "ok" || !v.body?.token) {
+      logger.error({ status: v.status, body: JSON.stringify(v.body).slice(0, 120) }, "[WNBF] captcha verify failed");
+      return null;
+    }
+    const capToken = v.body.token;
+    const p = await postJson(
+      host,
+      `/api/videos/${videoId}/embed/playback`,
+      { fingerprint: { token: capToken } },
+      { "X-Captcha-Token": capToken }
+    );
+    if (p.status !== 200 || !p.body?.playback) {
+      logger.error({ status: p.status, body: JSON.stringify(p.body).slice(0, 160) }, "[WNBF] playback request failed");
+      return null;
+    }
+    const decrypted = await decryptPlayback(p.body.playback);
+    if (!decrypted) {
+      logger.error("[WNBF] could not decrypt playback payload");
+      return null;
+    }
+    const parsed = JSON.parse(decrypted);
+    const sources = Array.isArray(parsed?.sources) ? parsed.sources : [];
+    const master = sources.find((s) => s?.mime_type?.includes("mpegurl") && s?.url?.includes("master"))?.url ?? sources.find((s) => s?.mime_type?.includes("mpegurl"))?.url ?? sources[0]?.url ?? null;
+    if (!master) {
+      logger.error("[WNBF] no m3u8 url in decrypted payload");
+      return null;
+    }
+    logger.info({ m3u8: master.slice(0, 130) }, "[WNBF] extraction SUCCESS");
+    let intro = null;
+    let outro = null;
+    if (skipData?.intro && (skipData.intro[0] !== 0 || skipData.intro[1] !== 0)) {
+      intro = { start: skipData.intro[0], end: skipData.intro[1] };
+    }
+    if (skipData?.outro && (skipData.outro[0] !== 0 || skipData.outro[1] !== 0)) {
+      outro = { start: skipData.outro[0], end: skipData.outro[1] };
+    }
+    const subtitles = [];
+    return {
+      type: "direct",
+      provider: "byfms",
+      m3u8: master,
+      subtitles,
+      thumbnails: parsed?.poster_url ?? null,
+      intro,
+      outro
+    };
+  } catch (err) {
+    logger.error({ error: err.message }, "[WNBF] fatal error");
+    return null;
+  }
 }
 function isWeneverbeenfreeHost(url) {
   try {
-    const host = new URL(url).hostname;
-    return host.includes("weneverbeenfree") || host.includes("wnbf") || host.includes("myvidplay") || host.includes("animefever");
+    const h = new URL(url).hostname;
+    return h.includes("weneverbeenfree") || h.includes("wnbf") || h.includes("myvidplay") || h.includes("animefever") || h.includes("owphbf") || h.includes("sprintcdn");
   } catch {
     return false;
   }
@@ -1631,8 +1883,10 @@ router2.get("/proxy", async (req, res) => {
     const host = targetUrl.hostname;
     if (host.includes("echovideo") || host.includes("echo")) {
       referer = "https://play.echovideo.ru/";
-    } else if (host.includes("weneverbeenfree") || host.includes("owphbf") || host.includes("sprintcdn")) {
-      referer = "https://weneverbeenfree.com/";
+    } else if (host.includes("owphbf") || host.includes("sprintcdn")) {
+      referer = "https://aniwaves.ru/";
+    } else if (host.includes("weneverbeenfree")) {
+      referer = "https://aniwaves.ru/";
     } else {
       referer = "https://play.echovideo.ru/";
     }

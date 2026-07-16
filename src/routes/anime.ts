@@ -212,8 +212,11 @@ router.get("/proxy", async (req, res): Promise<void> => {
     const host = targetUrl.hostname;
     if (host.includes("echovideo") || host.includes("echo")) {
       referer = "https://play.echovideo.ru/";
-    } else if (host.includes("weneverbeenfree") || host.includes("owphbf") || host.includes("sprintcdn")) {
-      referer = "https://weneverbeenfree.com/";
+    } else if (host.includes("owphbf") || host.includes("sprintcdn")) {
+      // BYFMS/Byse CDN: requires the aniwaves.ru referer (verified live).
+      referer = "https://aniwaves.ru/";
+    } else if (host.includes("weneverbeenfree")) {
+      referer = "https://aniwaves.ru/";
     } else {
       referer = "https://play.echovideo.ru/";
     }
