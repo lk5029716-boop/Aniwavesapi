@@ -136,7 +136,12 @@ router.get("/stream", async (req, res): Promise<void> => {
   }, proxyUrl);
 
   if (stream?.m3u8) {
-    res.json({ ...stream, _server: "direct" });
+    // Browser can't load the raw CDN URL (CORS locked to play.echovideo.ru,
+    // content-type is image/jpeg). Wrap it through our own /api/proxy so the
+    // client fetches same-origin. appendSubFetch / relative segments are
+    // rewritten by the proxy back into proxied URLs.
+    const proxiedM3u8 = `/api/proxy?url=${encodeURIComponent(stream.m3u8)}&referer=${encodeURIComponent("https://play.echovideo.ru/")}`;
+    res.json({ ...stream, proxiedM3u8, _server: "direct" });
     return;
   }
 
@@ -250,7 +255,23 @@ router.get("/proxy", async (req, res): Promise<void> => {
       upstream.data.on("end", () => {
         const body = Buffer.concat(chunks).toString("utf8");
         const encodedReferer = encodeURIComponent(referer ?? "https://play.echovideo.ru/");
+        const origin = `${targetUrl.protocol}//${targetUrl.host}`;
         const baseUrl = urlParam.substring(0, urlParam.lastIndexOf("/") + 1);
+
+        // Resolve a playlist entry to an absolute URL, then wrap it so the
+        // browser fetches it through this proxy (same-origin, CORS-clean).
+        // Handles three cases the CDN actually emits:
+        //   - absolute http(s) URL
+        //   - root-absolute path  (/cdn/abc)  -> origin + path   (was buggy: double /cdn/)
+        //   - relative path       (seg-1.ts)  -> baseUrl + path
+        const toProxy = (raw: string): string => {
+          const abs = raw.startsWith("http")
+            ? raw
+            : raw.startsWith("/")
+              ? origin + raw
+              : baseUrl + raw;
+          return `/api/proxy?url=${encodeURIComponent(abs)}&referer=${encodedReferer}`;
+        };
 
         const rewritten = body
           .split("\n")
@@ -259,13 +280,11 @@ router.get("/proxy", async (req, res): Promise<void> => {
             if (!trimmed) return line;
             if (trimmed.startsWith("#") && trimmed.includes('URI="')) {
               return trimmed.replace(/URI="([^"]+)"/g, (_m, uri: string) => {
-                const abs = uri.startsWith("http") ? uri : baseUrl + uri;
-                return `URI="/api/proxy?url=${encodeURIComponent(abs)}&referer=${encodedReferer}"`;
+                return `URI="${toProxy(uri)}"`;
               });
             }
             if (trimmed.startsWith("#")) return line;
-            const abs = trimmed.startsWith("http") ? trimmed : baseUrl + trimmed;
-            return `/api/proxy?url=${encodeURIComponent(abs)}&referer=${encodedReferer}`;
+            return toProxy(trimmed);
           })
           .join("\n");
 

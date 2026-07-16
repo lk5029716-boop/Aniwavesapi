@@ -1578,7 +1578,8 @@ router2.get("/stream", async (req, res) => {
     outro: sourcesResult.skip_data?.outro
   }, proxyUrl);
   if (stream?.m3u8) {
-    res.json({ ...stream, _server: "direct" });
+    const proxiedM3u8 = `/api/proxy?url=${encodeURIComponent(stream.m3u8)}&referer=${encodeURIComponent("https://play.echovideo.ru/")}`;
+    res.json({ ...stream, proxiedM3u8, _server: "direct" });
     return;
   }
   res.status(502).json({ error: "Stream extraction failed from serverId" });
@@ -1666,19 +1667,22 @@ router2.get("/proxy", async (req, res) => {
       upstream.data.on("end", () => {
         const body = Buffer.concat(chunks).toString("utf8");
         const encodedReferer = encodeURIComponent(referer ?? "https://play.echovideo.ru/");
+        const origin = `${targetUrl.protocol}//${targetUrl.host}`;
         const baseUrl = urlParam.substring(0, urlParam.lastIndexOf("/") + 1);
+        const toProxy = (raw) => {
+          const abs = raw.startsWith("http") ? raw : raw.startsWith("/") ? origin + raw : baseUrl + raw;
+          return `/api/proxy?url=${encodeURIComponent(abs)}&referer=${encodedReferer}`;
+        };
         const rewritten = body.split("\n").map((line) => {
           const trimmed = line.trim();
           if (!trimmed) return line;
           if (trimmed.startsWith("#") && trimmed.includes('URI="')) {
             return trimmed.replace(/URI="([^"]+)"/g, (_m, uri) => {
-              const abs2 = uri.startsWith("http") ? uri : baseUrl + uri;
-              return `URI="/api/proxy?url=${encodeURIComponent(abs2)}&referer=${encodedReferer}"`;
+              return `URI="${toProxy(uri)}"`;
             });
           }
           if (trimmed.startsWith("#")) return line;
-          const abs = trimmed.startsWith("http") ? trimmed : baseUrl + trimmed;
-          return `/api/proxy?url=${encodeURIComponent(abs)}&referer=${encodedReferer}`;
+          return toProxy(trimmed);
         }).join("\n");
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
         res.removeHeader("Content-Length");
