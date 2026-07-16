@@ -340,12 +340,24 @@ function playHLS(url){
   function tryPlay(){
     var p = v.play();
     if(p && p.catch){
-      p.then(function(){ if(v.muted){ $('pSub').textContent='🔊 Click video to enable sound'; } })
-       .catch(function(e){
-          console.log('play() rejected:', e.name, e.message);
-          // Autoplay blocked despite mute (rare) -> let the user click the overlay.
-          setOverlay('▶️','Click to play','Autoplay was blocked by the browser', v.error&&v.error.message);
-        });
+      p.then(function(){
+        // Playing now — hide the overlay, keep the (muted) video visible.
+        $('pOverlay').classList.add('hidden');
+        if(v.muted){ $('pSub').textContent='🔊 Click video to enable sound'; }
+      }).catch(function(e){
+        console.log('play() rejected:', e.name, e.message);
+        // Autoplay blocked -> show a clickable overlay but KEEP the video
+        // visible behind it, so a tap resumes playback (user gesture).
+        // Do NOT call setOverlay() here: it hides the <video>, which is
+        // what broke playback after the block.
+        var ov=$('pOverlay');
+        $('pIc').textContent='▶️';
+        $('pMsg').textContent='Click to play';
+        $('pSub').textContent='Autoplay blocked by browser — tap to play';
+        $('pErr').textContent='';
+        ov.classList.remove('hidden');
+        $('vv').style.display='block';
+      });
     }
   }
   window.__vvTryPlay = tryPlay;
