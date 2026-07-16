@@ -1638,11 +1638,10 @@ router2.get("/proxy", async (req, res) => {
     }
   }
   req.log.info(
-    { url: urlParam.slice(0, 80), referer },
+    { url: urlParam.slice(0, 80), referer, range: req.headers["range"] ?? null },
     "proxying stream URL"
   );
   try {
-    const isPlaylistBody = (body) => /^#EXTM3U/.test(body) || /\.m3u8(\?|$)/.test(urlParam);
     const upstream = await axios5.get(urlParam, {
       responseType: "stream",
       timeout: 3e4,
@@ -1664,11 +1663,14 @@ router2.get("/proxy", async (req, res) => {
     res.setHeader("Access-Control-Allow-Headers", "Range");
     res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length");
     res.setHeader("Accept-Ranges", "bytes");
-    if (isPlaylistBody || contentType?.includes("mpegurl") || urlParam.includes(".m3u8")) {
-      const chunks = [];
-      upstream.data.on("data", (chunk) => chunks.push(chunk));
-      upstream.data.on("end", () => {
-        const body = Buffer.concat(chunks).toString("utf8");
+    const chunks = [];
+    upstream.data.on("data", (chunk) => chunks.push(chunk));
+    upstream.data.on("end", () => {
+      const full = Buffer.concat(chunks);
+      const head = full.subarray(0, 64).toString("utf8");
+      const isPlaylist = /^#EXTM3U/.test(head) || urlParam.includes(".m3u8");
+      if (isPlaylist) {
+        const body = full.toString("utf8");
         const encodedReferer = encodeURIComponent(referer ?? "https://play.echovideo.ru/");
         const origin = `${targetUrl.protocol}//${targetUrl.host}`;
         const baseUrl = urlParam.substring(0, urlParam.lastIndexOf("/") + 1);
@@ -1690,18 +1692,34 @@ router2.get("/proxy", async (req, res) => {
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
         res.removeHeader("Content-Length");
         res.send(rewritten);
-      });
-      upstream.data.on("error", () => {
-        if (!res.headersSent) res.status(502).json({ error: "upstream stream error" });
-      });
-    } else {
-      if (upstream.status) res.status(upstream.status);
-      const upstreamContentRange = upstream.headers["content-range"];
-      if (upstreamContentRange) res.setHeader("Content-Range", upstreamContentRange);
-      const upstreamContentLength = upstream.headers["content-length"];
-      if (upstreamContentLength) res.setHeader("Content-Length", upstreamContentLength);
-      upstream.data.pipe(res);
-    }
+        req.log.info({ status: 200, kind: "playlist" }, "proxy playlist (rewritten)");
+      } else {
+        const total = full.length;
+        const rangeHeader = req.headers["range"];
+        const match = rangeHeader && /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
+        if (match) {
+          const start = match[1] ? parseInt(match[1], 10) : 0;
+          const end = match[2] ? parseInt(match[2], 10) : total - 1;
+          const clampedEnd = Math.min(end, total - 1);
+          const slice = full.subarray(start, clampedEnd + 1);
+          res.status(206);
+          res.setHeader("Content-Type", "video/MP2T");
+          res.setHeader("Content-Range", `bytes ${start}-${clampedEnd}/${total}`);
+          res.setHeader("Content-Length", String(slice.length));
+          res.send(slice);
+          req.log.info({ status: 206, range: `${start}-${clampedEnd}/${total}`, len: slice.length }, "proxy segment (range)");
+        } else {
+          res.status(200);
+          res.setHeader("Content-Type", "video/MP2T");
+          res.setHeader("Content-Length", String(total));
+          res.send(full);
+          req.log.info({ status: 200, len: total }, "proxy segment (full)");
+        }
+      }
+    });
+    upstream.data.on("error", () => {
+      if (!res.headersSent) res.status(502).json({ error: "upstream stream error" });
+    });
   } catch (err) {
     const e = err;
     req.log.error(

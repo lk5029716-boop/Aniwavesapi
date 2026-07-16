@@ -220,14 +220,11 @@ router.get("/proxy", async (req, res): Promise<void> => {
   }
 
   req.log.info(
-    { url: urlParam.slice(0, 80), referer },
+    { url: urlParam.slice(0, 80), referer, range: req.headers["range"] ?? null },
     "proxying stream URL"
   );
 
   try {
-    const isPlaylistBody = (body: string): boolean =>
-      /^#EXTM3U/.test(body) || /\.m3u8(\?|$)/.test(urlParam);
-
     const upstream = await axios.get(urlParam, {
       responseType: "stream",
       timeout: 30000,
@@ -252,24 +249,25 @@ router.get("/proxy", async (req, res): Promise<void> => {
     res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length");
     res.setHeader("Accept-Ranges", "bytes");
 
-    if (isPlaylistBody || contentType?.includes("mpegurl") || urlParam.includes(".m3u8")) {
-      const chunks: Buffer[] = [];
-      upstream.data.on("data", (chunk: Buffer) => chunks.push(chunk));
-      upstream.data.on("end", () => {
-        const body = Buffer.concat(chunks).toString("utf8");
+    // Buffer the whole upstream response, then classify by CONTENT — echovideo
+    // serves variant playlists AND segments from extension-less /cdn/<hash>
+    // URLs, both with a bogus `image/jpeg` content-type. Routing by URL
+    // extension mis-classifies variants as segments, so hls.js receives
+    // image/jpeg for a media playlist and silently refuses to load fragments
+    // (stuck at readyState 0 / 0:00). Detect playlists by the #EXTM3U body.
+    const chunks: Buffer[] = [];
+    upstream.data.on("data", (chunk: Buffer) => chunks.push(chunk));
+    upstream.data.on("end", () => {
+      const full = Buffer.concat(chunks);
+      const head = full.subarray(0, 64).toString("utf8");
+      const isPlaylist = /^#EXTM3U/.test(head) || urlParam.includes(".m3u8");
+
+      if (isPlaylist) {
+        const body = full.toString("utf8");
         const encodedReferer = encodeURIComponent(referer ?? "https://play.echovideo.ru/");
         const origin = `${targetUrl.protocol}//${targetUrl.host}`;
         const baseUrl = urlParam.substring(0, urlParam.lastIndexOf("/") + 1);
 
-        // Resolve a playlist entry to an absolute URL, then wrap it so the
-        // browser fetches it through this proxy (same-origin, CORS-clean).
-        // Handles three cases the CDN actually emits:
-        //   - absolute http(s) URL
-        //   - root-absolute path  (/cdn/abc)  -> origin + path
-        //   - relative path       (seg-1.ts)  -> baseUrl + path
-        // This needs to run on EVERY playlist level (master -> variant ->
-        // segments) because the CDN returns each with a bogus
-        // `image/jpeg` content-type and root-absolute segment paths.
         const toProxy = (raw: string): string => {
           const abs = raw.startsWith("http")
             ? raw
@@ -294,26 +292,37 @@ router.get("/proxy", async (req, res): Promise<void> => {
           })
           .join("\n");
 
-        // Always advertise a correct HLS content-type. The upstream CDN
-        // lies with `image/jpeg`, which makes hls.js refuse the level
-        // (levelLoadError). Force the correct type on every level.
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
         res.removeHeader("Content-Length");
         res.send(rewritten);
-      });
-      upstream.data.on("error", () => {
-        if (!res.headersSent) res.status(502).json({ error: "upstream stream error" });
-      });
-    } else {
-      // Forward the upstream status (200 or 206) and any Content-Range so
-      // the browser's segmented playback works instead of stalling at 0:00.
-      if (upstream.status) res.status(upstream.status);
-      const upstreamContentRange = upstream.headers["content-range"];
-      if (upstreamContentRange) res.setHeader("Content-Range", upstreamContentRange);
-      const upstreamContentLength = upstream.headers["content-length"];
-      if (upstreamContentLength) res.setHeader("Content-Length", upstreamContentLength);
-      upstream.data.pipe(res);
-    }
+        req.log.info({ status: 200, kind: "playlist" }, "proxy playlist (rewritten)");
+      } else {
+        const total = full.length;
+        const rangeHeader = req.headers["range"] as string | undefined;
+        const match = rangeHeader && /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
+        if (match) {
+          const start = match[1] ? parseInt(match[1], 10) : 0;
+          const end = match[2] ? parseInt(match[2], 10) : total - 1;
+          const clampedEnd = Math.min(end, total - 1);
+          const slice = full.subarray(start, clampedEnd + 1);
+          res.status(206);
+          res.setHeader("Content-Type", "video/MP2T");
+          res.setHeader("Content-Range", `bytes ${start}-${clampedEnd}/${total}`);
+          res.setHeader("Content-Length", String(slice.length));
+          res.send(slice);
+          req.log.info({ status: 206, range: `${start}-${clampedEnd}/${total}`, len: slice.length }, "proxy segment (range)");
+        } else {
+          res.status(200);
+          res.setHeader("Content-Type", "video/MP2T");
+          res.setHeader("Content-Length", String(total));
+          res.send(full);
+          req.log.info({ status: 200, len: total }, "proxy segment (full)");
+        }
+      }
+    });
+    upstream.data.on("error", () => {
+      if (!res.headersSent) res.status(502).json({ error: "upstream stream error" });
+    });
   } catch (err) {
     const e = err as Error & { response?: { status: number } };
     req.log.error(
