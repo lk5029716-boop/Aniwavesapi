@@ -335,41 +335,40 @@ function playHLS(url){
   var v=$('vv');
   if(hls){hls.destroy();hls=null}
   v.muted = true;            // muted lets the browser autoplay without a gesture
+  v.defaultMuted = true;
   v.autoplay = true;
   v.playsInline = true;
 
-  function hideOverlay(){ $('pOverlay').classList.add('hidden'); $('vv').style.display='block'; }
+  // Show a small non-blocking hint (does NOT cover the video, so the
+  // native controls / native play button stay tappable — a tap on the
+  // native button ALWAYS starts playback, unlike a tap on our overlay).
+  function hint(msg){ $('pSub').textContent = msg; }
+  function playStarted(){ $('pOverlay').classList.add('hidden'); $('vv').style.display='block'; $('pErr').textContent=''; }
 
   function tryPlay(){
     var p = v.play();
     if(p && p.catch){
-      p.then(function(){
-        hideOverlay();
-        if(v.muted){ $('pSub').textContent='🔊 Click video to enable sound'; }
-      }).catch(function(e){
-        console.log('play() rejected:', e.name, e.message);
-        // Autoplay blocked -> show a clickable overlay but KEEP the video
-        // visible behind it, so a tap resumes playback (user gesture).
-        var ov=$('pOverlay');
-        $('pIc').textContent='▶️';
-        $('pMsg').textContent='Click to play';
-        $('pSub').textContent='Tap to start playback';
-        $('pErr').textContent='';
-        ov.classList.remove('hidden');
-        $('vv').style.display='block';
-      });
+      p.then(function(){ playStarted(); if(v.muted) hint('🔊 Tap video to enable sound'); })
+       .catch(function(e){
+          console.log('play() rejected:', e.name, e.message);
+          // Autoplay blocked. Hide OUR overlay so the native <video> controls
+          // are tappable; the native play button will start it on tap.
+          playStarted();
+          hint('▶️ Tap the video’s play button to start');
+        });
     }
   }
   window.__vvTryPlay = tryPlay;
 
-  // Surface the REAL failure if playback stalls (so we can see it instead
-  // of a silent pause at 0:00).
-  v.addEventListener('playing', function(){ hideOverlay(); $('pErr').textContent=''; });
-  v.addEventListener('error', function(){ if(v.error){ $('pErr').textContent='Media error: '+v.error.code+' '+v.error.message; } });
-  v.addEventListener('stalled', function(){ $('pSub').textContent='Buffering…'; });
-  // Belt-and-suspenders: if the manifest parsed but play() never ran,
-  // try again as soon as the element can play.
+  v.addEventListener('playing', function(){ playStarted(); });
+  v.addEventListener('error', function(){ if(v.error) $('pErr').textContent='Media error: '+v.error.code+' '+v.error.message; });
+  v.addEventListener('stalled', function(){ hint('Buffering…'); });
   v.addEventListener('canplay', function(){ if(v.paused) tryPlay(); }, { once:true });
+  // Tapping the video itself resumes/unmutes (native gesture).
+  v.addEventListener('click', function(){
+    if(v.paused) v.play().catch(function(){});
+    else if(v.muted){ v.muted=false; }
+  });
 
   // `url` is either the raw m3u8 (then we proxy it) or already a
   // /api/proxy URL (then use it as-is). The proxy handles CORS +
@@ -391,7 +390,6 @@ function playHLS(url){
     hls.on(Hls.Events.ERROR,function(e,d){
       console.error('HLS error:', d.type, d.details, 'fatal:', d.fatal);
       if(d.fatal){
-        // Try to recover once for network/level errors before giving up.
         if(d.type===Hls.ErrorTypes.NETWORK_ERROR){hls.startLoad();return;}
         if(d.type===Hls.ErrorTypes.MEDIA_ERROR){hls.recoverMediaError();return;}
         setOverlay('❌','Playback error: '+d.details, '', 'hls.js fatal: '+d.details);
@@ -399,7 +397,7 @@ function playHLS(url){
     });
   }else if(v.canPlayType('application/vnd.apple.mpegurl')){
     v.src=proxyUrl;
-    v.onloadedmetadata=function(){tryPlay();};
+    v.addEventListener('loadedmetadata', function(){ tryPlay(); }, { once:true });
   }else{
     setOverlay('❌','HLS not supported');
   }
