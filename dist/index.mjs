@@ -50,10 +50,20 @@ router.get("/health", async (_req, res) => {
       chromiumLaunchTest = `failed: ${e.message.slice(0, 100)}`;
     }
   }
+  let curlCffiAvailable = false;
+  try {
+    execSync(`python3 -c 'from curl_cffi import requests; print("ok")'`, { encoding: "utf8", timeout: 5e3 });
+    curlCffiAvailable = true;
+  } catch {
+    curlCffiAvailable = false;
+  }
+  const scraperPath = process.env["ANIWAVES_SCRAPER_PATH"] || "";
   res.json({
     status: "ok",
     timestamp: (/* @__PURE__ */ new Date()).toISOString(),
     curl: curlAvailable,
+    curlCffi: curlCffiAvailable,
+    scraperPath: scraperPath || "(not set)",
     node: process.version,
     env: process.env.NODE_ENV || "development",
     chromium: chromiumPath || "not found",
@@ -99,6 +109,52 @@ function cacheSet(key, value, ttl = 300) {
   cache.set(key, value, ttl);
 }
 
+// src/lib/anime/proxy.ts
+var PROXY_BASE = (process.env["ANIWAVES_PROXY_URL"] ?? "").trim();
+var PROXIED_HOSTS = [
+  "aniwaves.ru",
+  "echovideo.ru",
+  "echovideo.to",
+  "play.echovideo.ru",
+  "myvidplay.com",
+  "playmogo.com",
+  "gn1r5n.org",
+  "weneverbeenfree.com"
+];
+var warned = false;
+function proxyEnabled() {
+  return PROXY_BASE.length > 0;
+}
+function shouldProxy(url) {
+  try {
+    const host = new URL(url).hostname;
+    return PROXIED_HOSTS.some(
+      (h) => host === h || host.endsWith("." + h)
+    );
+  } catch {
+    return false;
+  }
+}
+function maybeProxy(url) {
+  if (!proxyEnabled() || !shouldProxy(url)) return url;
+  if (!warned) {
+    warned = true;
+    logger.info(
+      { proxy: PROXY_BASE.slice(0, 40) },
+      "[proxy] routing Cloudflare-fronted requests through CF Worker"
+    );
+  }
+  const sep = PROXY_BASE.includes("?") ? "&" : "?";
+  return `${PROXY_BASE}${sep}url=${encodeURIComponent(url)}`;
+}
+function proxyHeaders(headers) {
+  if (!proxyEnabled()) return headers;
+  const out = { ...headers };
+  delete out["Referer"];
+  delete out["Origin"];
+  return out;
+}
+
 // src/lib/anime/scraper.ts
 var BASE_URL = "https://aniwaves.ru";
 var client = axios.create({
@@ -128,7 +184,11 @@ async function searchAnime(q) {
     return cached;
   }
   logger.info({ q }, "searching anime via /ajax/anime/search");
-  const resp = await ajaxClient.get("/ajax/anime/search", {
+  const resp = await ajaxClient.get(maybeProxy("/ajax/anime/search"), {
+    headers: proxyHeaders({
+      "X-Requested-With": "XMLHttpRequest",
+      Referer: BASE_URL
+    }),
     params: { keyword: q }
   });
   const data = resp.data;
@@ -165,7 +225,7 @@ async function getNumericId(animeId) {
     cacheSet(cacheKey, numericId2, 86400);
     return numericId2;
   }
-  const resp = await client.get(`/watch/${animeId}`);
+  const resp = await client.get(maybeProxy(`/watch/${animeId}`));
   const $ = cheerio.load(resp.data);
   const numericId = $("[data-id]").first().attr("data-id") ?? null;
   if (numericId) {
@@ -273,8 +333,11 @@ async function getEpisodes(animeId) {
     logger.warn({ animeId }, "could not resolve numeric ID");
     return [];
   }
-  const resp = await ajaxClient.get(`/ajax/episode/list/${numericId}`, {
-    headers: { Referer: `${BASE_URL}/watch/${animeId}` }
+  const resp = await ajaxClient.get(maybeProxy(`/ajax/episode/list/${numericId}`), {
+    headers: proxyHeaders({
+      Referer: `${BASE_URL}/watch/${animeId}`,
+      "X-Requested-With": "XMLHttpRequest"
+    })
   });
   const data = resp.data;
   const html = data.result ?? "";
@@ -323,9 +386,12 @@ async function getServers(animeId, ep, type) {
     logger.warn({ animeId, ep, rawId: episode.rawId }, "could not parse rawId");
     return [];
   }
-  const resp = await ajaxClient.get("/ajax/server/list", {
+  const resp = await ajaxClient.get(maybeProxy("/ajax/server/list"), {
     params: { servers: animeNumId, eps: epsNum },
-    headers: { Referer: `${BASE_URL}/watch/${animeId}` }
+    headers: proxyHeaders({
+      Referer: `${BASE_URL}/watch/${animeId}`,
+      "X-Requested-With": "XMLHttpRequest"
+    })
   });
   const data = resp.data;
   const html = data.result ?? "";
@@ -357,11 +423,12 @@ async function getServers(animeId, ep, type) {
 }
 async function getEmbedUrl(linkId, refererAnimeId) {
   logger.info({ linkId: linkId.slice(0, 40) }, "resolving embed URL from /ajax/sources");
-  const resp = await ajaxClient.get("/ajax/sources", {
+  const resp = await ajaxClient.get(maybeProxy("/ajax/sources"), {
     params: { id: linkId },
-    headers: {
+    headers: proxyHeaders({
+      "X-Requested-With": "XMLHttpRequest",
       Referer: refererAnimeId ? `${BASE_URL}/watch/${refererAnimeId}` : BASE_URL
-    }
+    })
   });
   const data = resp.data;
   logger.debug(
@@ -1121,7 +1188,7 @@ async function extractEchovideo(embedUrl, skipData) {
     Accept: "text/html,application/xhtml+xml,*/*"
   };
   try {
-    const pageResp = await axios4.get(embedUrl, { timeout: 1e4, headers: commonHeaders });
+    const pageResp = await axios4.get(maybeProxy(embedUrl), { timeout: 1e4, headers: commonHeaders });
     logger.debug(
       { status: pageResp.status, snippet: String(pageResp.data).slice(0, 120) },
       "[Echovideo S1] embed page fetched"
@@ -1136,7 +1203,7 @@ async function extractEchovideo(embedUrl, skipData) {
   );
   let data;
   try {
-    const resp = await axios4.get(sourcesUrl, {
+    const resp = await axios4.get(maybeProxy(sourcesUrl), {
       params: { id: sourceId },
       headers: {
         "User-Agent": commonHeaders["User-Agent"],
@@ -1267,93 +1334,80 @@ function isWeneverbeenfreeHost(url) {
 
 // src/lib/anime/providers/dghg.ts
 import { execFileSync } from "child_process";
-var ANIWAVES_SCRAPER = process.env["ANIWAVES_SCRAPER_PATH"] ?? "";
-function isPlayMogoHost(url) {
+function isDghgEmbedUrl(url) {
   try {
-    return new URL(url).hostname.includes("playmogo");
+    const host = new URL(url).hostname;
+    return host.includes("myvidplay") || host.includes("playmogo");
   } catch {
     return false;
   }
 }
-async function extractDghg(embedUrl, skipData) {
-  const playMogoUrl = isPlayMogoHost(embedUrl) ? embedUrl : null;
-  const targetUrl = playMogoUrl ?? embedUrl;
-  logger.info(
-    { embedUrl: embedUrl.slice(0, 100), targetUrl: targetUrl.slice(0, 100) },
-    "[DGHG] starting extraction"
-  );
-  if (ANIWAVES_SCRAPER) {
-    try {
-      const result = execFileSync(
-        "python3",
-        [ANIWAVES_SCRAPER, "--server", targetUrl],
-        {
-          timeout: 3e4,
-          encoding: "utf8",
-          env: { ...process.env }
-        }
-      ).trim();
-      const parsed = JSON.parse(result);
-      if (parsed.ok) {
-        logger.info(
-          { m3u8: parsed.m3u8.slice(0, 100) },
-          "[DGHG] curl_cffi extraction SUCCESS"
-        );
-        let intro = null;
-        let outro = null;
-        if (skipData?.intro && (skipData.intro[0] !== 0 || skipData.intro[1] !== 0)) {
-          intro = { start: skipData.intro[0], end: skipData.intro[1] };
-        }
-        if (skipData?.outro && (skipData.outro[0] !== 0 || skipData.outro[1] !== 0)) {
-          outro = { start: skipData.outro[0], end: skipData.outro[1] };
-        }
-        return {
-          type: "direct",
-          provider: "dghg",
-          m3u8: parsed.m3u8,
-          subtitles: [],
-          thumbnails: null,
-          intro,
-          outro
-        };
-      }
-      logger.warn(
-        { error: parsed.error },
-        "[DGHG] curl_cffi extraction failed, falling back to Playwright"
-      );
-    } catch (err) {
-      const e = err;
-      logger.warn(
-        {
-          error: e.message,
-          stderr: e.stderr?.toString().slice(0, 200),
-          status: e.status
-        },
-        "[DGHG] curl_cffi subprocess failed, falling back to Playwright"
-      );
-    }
-  }
-  logger.info(
-    { embedUrl: embedUrl.slice(0, 100) },
-    "[DGHG] falling back to Playwright (Chromium)"
-  );
-  const pwResult = await extractViaPlaywright(embedUrl, "dghg", skipData);
-  if (pwResult?.m3u8) {
-    logger.info(
-      { m3u8: pwResult.m3u8.slice(0, 100) },
-      "[DGHG] Playwright extraction SUCCESS"
-    );
-    return pwResult;
-  }
-  logger.error(
-    { embedUrl: embedUrl.slice(0, 100) },
-    "[DGHG] all extraction methods failed"
-  );
-  return null;
-}
 function isDghgServer(serverName) {
   const n = serverName.toLowerCase();
   return n.includes("dghg") || n.includes("dood") || n.includes("playmogo");
+}
+async function extractDghg(embedUrl, skipData, proxyUrl) {
+  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] start");
+  const envPath = process.env["ANIWAVES_SCRAPER_PATH"];
+  const candidatePaths = [
+    envPath,
+    "/app/aniwaves_scraper.py",
+    "/opt/render/project/src/aniwaves_scraper.py",
+    "aniwaves_scraper.py"
+  ].filter(Boolean);
+  let scraperPath = candidatePaths[0] ?? "/app/aniwaves_scraper.py";
+  for (const p of candidatePaths) {
+    try {
+      execFileSync("test", ["-f", p], { timeout: 3e3 });
+      scraperPath = p;
+      logger.info({ scraperPath }, "[DGHG] found scraper at");
+      break;
+    } catch {
+      continue;
+    }
+  }
+  try {
+    const env = { ...process.env };
+    if (proxyUrl) {
+      env["ANIWAVES_PROXY_URL"] = proxyUrl;
+      logger.info({ proxyUrl: proxyUrl.slice(0, 60) }, "[DGHG] using proxy");
+    }
+    const result = execFileSync(
+      "python3",
+      [scraperPath, "--server", embedUrl],
+      { timeout: 15e3, encoding: "utf8", env }
+    ).trim();
+    const parsed = JSON.parse(result);
+    if (!parsed.ok) {
+      logger.warn({ error: parsed.error }, "[DGHG] failed");
+      return null;
+    }
+    logger.info({ m3u8: parsed.m3u8.slice(0, 80) }, "[DGHG] OK");
+    let intro = null;
+    let outro = null;
+    if (skipData?.intro && (skipData.intro[0] !== 0 || skipData.intro[1] !== 0)) {
+      intro = { start: skipData.intro[0], end: skipData.intro[1] };
+    }
+    if (skipData?.outro && (skipData.outro[0] !== 0 || skipData.outro[1] !== 0)) {
+      outro = { start: skipData.outro[0], end: skipData.outro[1] };
+    }
+    return {
+      type: "direct",
+      provider: "dghg",
+      m3u8: parsed.m3u8,
+      subtitles: [],
+      thumbnails: null,
+      intro,
+      outro
+    };
+  } catch (err) {
+    const e = err;
+    logger.warn(
+      { error: e.message.slice(0, 120), stderr: e.stderr?.toString().slice(0, 200) },
+      "[DGHG] error, skipping"
+    );
+    return null;
+  }
 }
 
 // src/lib/anime/providers/index.ts
@@ -1395,6 +1449,10 @@ async function extractStream(embedUrl, serverName, skipData, proxyUrl) {
     logger.info({ serverName }, "routing to Echovideo extractor");
     return extractEchovideo(embedUrl, skipData);
   }
+  if (isDghgServer(serverName) || isDghgEmbedUrl(embedUrl) || lowerName.includes("dood") || lowerName.includes("playmogo")) {
+    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to DGHG extractor");
+    return extractDghg(embedUrl, skipData, proxyUrl);
+  }
   if (matchHost(embedUrl, WNBF_LIKE_HOSTS) || isWeneverbeenfreeHost(embedUrl) || lowerName.includes("byfms") || lowerName.includes("weneverbeenfree")) {
     logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to WeneverBeenFree extractor");
     return extractWeneverbeenfree(embedUrl, skipData);
@@ -1402,10 +1460,6 @@ async function extractStream(embedUrl, serverName, skipData, proxyUrl) {
   if (matchHost(embedUrl, MEGACLOUD_LIKE_HOSTS) || isMegacloudHost(embedUrl) || lowerName.includes("megacloud") || lowerName.includes("rapidcloud") || lowerName.includes("rabbitstream")) {
     logger.info({ serverName }, "routing to MegaCloud extractor");
     return extractMegacloud(embedUrl);
-  }
-  if (isDghgServer(serverName) || isDghgEmbedUrl(embedUrl) || lowerName.includes("dood") || lowerName.includes("playmogo")) {
-    logger.info({ serverName, host: new URL(embedUrl).hostname }, "routing to DGHG extractor");
-    return extractDghg(embedUrl, skipData);
   }
   if (matchHost(embedUrl, VIDPLAY_LIKE_HOSTS) || isVidplayHost(embedUrl) || lowerName.includes("vidplay") || lowerName.includes("vidcloud")) {
     logger.info({ serverName }, "routing to Vidplay extractor");
@@ -1518,6 +1572,7 @@ router2.get("/stream", async (req, res) => {
     res.status(502).json({ error: "Could not resolve embed URL from serverId" });
     return;
   }
+  req.log.info({ embedUrl: sourcesResult.url, serverId: serverId.slice(0, 40) }, "resolved embed URL");
   const stream = await extractStream(sourcesResult.url, "direct", {
     intro: sourcesResult.skip_data?.intro,
     outro: sourcesResult.skip_data?.outro
@@ -1527,6 +1582,34 @@ router2.get("/stream", async (req, res) => {
     return;
   }
   res.status(502).json({ error: "Stream extraction failed from serverId" });
+});
+router2.get("/debug-dghg", async (req, res) => {
+  const embedUrl = req.query["embedUrl"];
+  if (!embedUrl || typeof embedUrl !== "string") {
+    res.status(400).json({ error: "embedUrl query param required" });
+    return;
+  }
+  const scraperPath = process.env["ANIWAVES_SCRAPER_PATH"] || "/opt/render/project/src/aniwaves_scraper.py";
+  try {
+    const { execFileSync: execFileSync2 } = await import("child_process");
+    const result = execFileSync2(
+      "python3",
+      [scraperPath, "--server", embedUrl],
+      { timeout: 3e4, encoding: "utf8", env: { ...process.env } }
+    ).trim();
+    const parsed = JSON.parse(result);
+    res.json({ ok: true, result: parsed });
+  } catch (err) {
+    const e = err;
+    res.status(502).json({
+      ok: false,
+      error: e.message,
+      stderr: e.stderr?.toString().slice(0, 500),
+      status: e.status,
+      scraperPath,
+      embedUrl: embedUrl.slice(0, 100)
+    });
+  }
 });
 router2.get("/proxy", async (req, res) => {
   const urlParam = Array.isArray(req.query["url"]) ? req.query["url"][0] : req.query["url"];

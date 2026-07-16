@@ -7,6 +7,11 @@ const ALLOWED = [
   "aniwaves.ru",
   "play.echovideo.ru",
   "echovideo.ru",
+  "echovideo.to",
+  "playmogo.com",
+  "myvidplay.com",
+  "gn1r5n.org",
+  "weneverbeenfree.com",
 ];
 
 export default {

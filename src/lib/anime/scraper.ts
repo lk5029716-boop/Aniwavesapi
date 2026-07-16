@@ -12,6 +12,7 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import { logger } from "../logger.js";
 import { cacheGet, cacheSet } from "./cache.js";
+import { maybeProxy, proxyHeaders } from "./proxy.js";
 import type {
   AnimeSearchResult,
   AnimeDetails,
@@ -56,7 +57,11 @@ export async function searchAnime(q: string): Promise<AnimeSearchResult[]> {
 
   logger.info({ q }, "searching anime via /ajax/anime/search");
 
-  const resp = await ajaxClient.get("/ajax/anime/search", {
+  const resp = await ajaxClient.get(maybeProxy("/ajax/anime/search"), {
+    headers: proxyHeaders({
+      "X-Requested-With": "XMLHttpRequest",
+      Referer: BASE_URL,
+    }),
     params: { keyword: q },
   });
 
@@ -118,7 +123,7 @@ export async function getNumericId(animeId: string): Promise<string | null> {
   }
 
   // Fallback: fetch watch page and read data-id attribute
-  const resp = await client.get(`/watch/${animeId}`);
+  const resp = await client.get(maybeProxy(`/watch/${animeId}`));
   const $ = cheerio.load(resp.data as string);
 
   const numericId = $("[data-id]").first().attr("data-id") ?? null;
@@ -273,8 +278,11 @@ export async function getEpisodes(animeId: string): Promise<Episode[]> {
     return [];
   }
 
-  const resp = await ajaxClient.get(`/ajax/episode/list/${numericId}`, {
-    headers: { Referer: `${BASE_URL}/watch/${animeId}` },
+  const resp = await ajaxClient.get(maybeProxy(`/ajax/episode/list/${numericId}`), {
+    headers: proxyHeaders({
+      Referer: `${BASE_URL}/watch/${animeId}`,
+      "X-Requested-With": "XMLHttpRequest",
+    }),
   });
 
   const data = resp.data as { status: number; result?: string };
@@ -346,9 +354,12 @@ export async function getServers(
     return [];
   }
 
-  const resp = await ajaxClient.get("/ajax/server/list", {
+  const resp = await ajaxClient.get(maybeProxy("/ajax/server/list"), {
     params: { servers: animeNumId, eps: epsNum },
-    headers: { Referer: `${BASE_URL}/watch/${animeId}` },
+    headers: proxyHeaders({
+      Referer: `${BASE_URL}/watch/${animeId}`,
+      "X-Requested-With": "XMLHttpRequest",
+    }),
   });
 
   const data = resp.data as { status: number; result?: string };
@@ -408,13 +419,14 @@ export async function getEmbedUrl(
 ): Promise<SourcesResult | null> {
   logger.info({ linkId: linkId.slice(0, 40) }, "resolving embed URL from /ajax/sources");
 
-  const resp = await ajaxClient.get("/ajax/sources", {
+  const resp = await ajaxClient.get(maybeProxy("/ajax/sources"), {
     params: { id: linkId },
-    headers: {
+    headers: proxyHeaders({
+      "X-Requested-With": "XMLHttpRequest",
       Referer: refererAnimeId
         ? `${BASE_URL}/watch/${refererAnimeId}`
         : BASE_URL,
-    },
+    }),
   });
 
   const data = resp.data as {

@@ -77,9 +77,25 @@ def resolve_m3u8(s, embed_url: str):
         "Accept": "application/json, text/plain, */*",
     }
 
+    # Echovideo (primary aniwaves CDN) is a plain getSources with a STRING m3u8,
+    # NOT an ajax path and NOT encrypted. Try the real endpoints first.
+    host = pu.hostname or ""
+    echovideo_info = None
+    if "echovideo" in host or "echo" in host:
+        try:
+            r = s.get(f"{origin}/embed-1/getSources", params={"id": key},
+                      headers=headers, timeout=15)
+            if r.status_code == 200 and r.text.strip().startswith("{"):
+                echovideo_info = r.json()
+        except Exception:
+            pass
+
+    if echovideo_info and "sources" in echovideo_info:
+        return echovideo_info
+
     # mediainfo (some builds) + getSources (rabbitstream-style)
     info = None
-    for path in (f"/mediainfo/{key}", f"/ajax/embed-1/getSources?id={key}"):
+    for path in (f"/mediainfo/{key}", f"/embed-1/getSources?id={key}"):
         try:
             r = proxied_get(origin + path, headers=headers, timeout=15)
             if r.status_code == 200 and r.text.strip().startswith(("{", "[")):

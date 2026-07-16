@@ -7,7 +7,7 @@
     "build": "node build.mjs",
     "start": "node dist/index.mjs",
     "dev": "node build.mjs && node dist/index.mjs",
-    "postinstall": "npx playwright install chromium 2>/dev/null || echo 'Playwright install skipped'"
+    "postinstall": "npx playwright install chromium"
   },
   "dependencies": {
     "axios": "^1.7.9",

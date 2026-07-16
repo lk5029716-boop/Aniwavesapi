@@ -20,6 +20,7 @@
 import axios from "axios";
 import { logger } from "../../logger.js";
 import { extractViaPlaywright } from "./playwright-extractor.js";
+import { maybeProxy } from "../proxy.js";
 import type { StreamSource, Subtitle, SkipTime } from "../types.js";
 
 interface EchovideoSourcesResponse {
@@ -60,7 +61,7 @@ export async function extractEchovideo(
   };
 
   try {
-    const pageResp = await axios.get(embedUrl, { timeout: 10000, headers: commonHeaders });
+    const pageResp = await axios.get(maybeProxy(embedUrl), { timeout: 10000, headers: commonHeaders });
     logger.debug(
       { status: pageResp.status, snippet: String(pageResp.data).slice(0, 120) },
       "[Echovideo S1] embed page fetched"
@@ -77,7 +78,7 @@ export async function extractEchovideo(
 
   let data: EchovideoSourcesResponse;
   try {
-    const resp = await axios.get<EchovideoSourcesResponse>(sourcesUrl, {
+    const resp = await axios.get<EchovideoSourcesResponse>(maybeProxy(sourcesUrl), {
       params: { id: sourceId },
       headers: {
         "User-Agent": commonHeaders["User-Agent"],
