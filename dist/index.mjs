@@ -1651,15 +1651,19 @@ router2.get("/proxy", async (req, res) => {
         Referer: referer,
         Origin: new URL(referer).origin,
         Accept: "*/*",
-        "Accept-Encoding": "identity"
+        "Accept-Encoding": "identity",
+        // Forward the browser's Range so the CDN returns a partial 206
+        // (hls.js requests byte ranges; without this the player stalls at 0:00).
+        ...req.headers["range"] ? { Range: req.headers["range"] } : {}
       },
-      maxRedirects: 5
+      maxRedirects: 5,
+      // Don't let axios throw on a 206 from the CDN.
+      validateStatus: (s) => s < 400
     });
-    const contentType = upstream.headers["content-type"];
-    const contentLength = upstream.headers["content-length"];
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "Range");
     res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length");
+    res.setHeader("Accept-Ranges", "bytes");
     if (isPlaylistBody || contentType?.includes("mpegurl") || urlParam.includes(".m3u8")) {
       const chunks = [];
       upstream.data.on("data", (chunk) => chunks.push(chunk));
@@ -1691,6 +1695,11 @@ router2.get("/proxy", async (req, res) => {
         if (!res.headersSent) res.status(502).json({ error: "upstream stream error" });
       });
     } else {
+      if (upstream.status) res.status(upstream.status);
+      const upstreamContentRange = upstream.headers["content-range"];
+      if (upstreamContentRange) res.setHeader("Content-Range", upstreamContentRange);
+      const upstreamContentLength = upstream.headers["content-length"];
+      if (upstreamContentLength) res.setHeader("Content-Length", upstreamContentLength);
       upstream.data.pipe(res);
     }
   } catch (err) {

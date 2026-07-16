@@ -231,7 +231,7 @@ select{appearance:auto;cursor:pointer}
         <div class="sub" id="pSub">Pick a server and click Play</div>
         <div class="pErr" id="pErr"></div>
       </div>
-      <video id="vv" controls playsinline muted autoplay></video>
+      <video id="vv" controls playsinline muted></video>
     </div>
     <div id="pBar">
       <span id="pInfo"></span>
@@ -336,24 +336,24 @@ function playHLS(url){
   if(hls){hls.destroy();hls=null}
   v.muted = true;            // muted lets the browser autoplay without a gesture
   v.autoplay = true;
+  v.playsInline = true;
+
+  function hideOverlay(){ $('pOverlay').classList.add('hidden'); $('vv').style.display='block'; }
 
   function tryPlay(){
     var p = v.play();
     if(p && p.catch){
       p.then(function(){
-        // Playing now — hide the overlay, keep the (muted) video visible.
-        $('pOverlay').classList.add('hidden');
+        hideOverlay();
         if(v.muted){ $('pSub').textContent='🔊 Click video to enable sound'; }
       }).catch(function(e){
         console.log('play() rejected:', e.name, e.message);
         // Autoplay blocked -> show a clickable overlay but KEEP the video
         // visible behind it, so a tap resumes playback (user gesture).
-        // Do NOT call setOverlay() here: it hides the <video>, which is
-        // what broke playback after the block.
         var ov=$('pOverlay');
         $('pIc').textContent='▶️';
         $('pMsg').textContent='Click to play';
-        $('pSub').textContent='Autoplay blocked by browser — tap to play';
+        $('pSub').textContent='Tap to start playback';
         $('pErr').textContent='';
         ov.classList.remove('hidden');
         $('vv').style.display='block';
@@ -361,6 +361,15 @@ function playHLS(url){
     }
   }
   window.__vvTryPlay = tryPlay;
+
+  // Surface the REAL failure if playback stalls (so we can see it instead
+  // of a silent pause at 0:00).
+  v.addEventListener('playing', function(){ hideOverlay(); $('pErr').textContent=''; });
+  v.addEventListener('error', function(){ if(v.error){ $('pErr').textContent='Media error: '+v.error.code+' '+v.error.message; } });
+  v.addEventListener('stalled', function(){ $('pSub').textContent='Buffering…'; });
+  // Belt-and-suspenders: if the manifest parsed but play() never ran,
+  // try again as soon as the element can play.
+  v.addEventListener('canplay', function(){ if(v.paused) tryPlay(); }, { once:true });
 
   // `url` is either the raw m3u8 (then we proxy it) or already a
   // /api/proxy URL (then use it as-is). The proxy handles CORS +
@@ -385,7 +394,7 @@ function playHLS(url){
         // Try to recover once for network/level errors before giving up.
         if(d.type===Hls.ErrorTypes.NETWORK_ERROR){hls.startLoad();return;}
         if(d.type===Hls.ErrorTypes.MEDIA_ERROR){hls.recoverMediaError();return;}
-        setOverlay('❌','Playback error: '+d.details);
+        setOverlay('❌','Playback error: '+d.details, '', 'hls.js fatal: '+d.details);
       }
     });
   }else if(v.canPlayType('application/vnd.apple.mpegurl')){
@@ -422,6 +431,9 @@ function doPlay(){
   var id=$('p_id').value.trim(),ep=$('p_ep').value,type=$('p_type').value;
   var srv=$('p_server').value;
   if(!id){setOverlay('❌','Enter an anime ID');return}
+  // Apply muted state on the live user gesture so the browser is allowed
+  // to autoplay once the source attaches.
+  var v=$('vv'); v.muted=true; v.playsInline=true;
   var epId=id+'-ep-'+ep;
 
   // If no server selected, load servers then auto-play first one
