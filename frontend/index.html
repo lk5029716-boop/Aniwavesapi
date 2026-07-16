@@ -225,13 +225,13 @@ select{appearance:auto;cursor:pointer}
       <button class="btn dark" onclick="doStop()">■ Stop</button>
     </div>
     <div id="playerWrap">
-      <div id="pOverlay">
+      <div id="pOverlay" onclick="if(window.__vvTryPlay)window.__vvTryPlay()">
         <div class="big" id="pIc">▶️</div>
         <div class="txt" id="pMsg">Select server and click Play</div>
         <div class="sub" id="pSub">Pick a server and click Play</div>
         <div class="pErr" id="pErr"></div>
       </div>
-      <video id="vv" controls playsinline></video>
+      <video id="vv" controls playsinline muted autoplay></video>
     </div>
     <div id="pBar">
       <span id="pInfo"></span>
@@ -319,6 +319,12 @@ function showVideo(server){
   $('pBar').style.display='flex';
   $('pInfo').textContent=$('p_id').value+' — Ep '+$('p_ep').value;
   $('pTag').innerHTML='<span class="pTag vp">'+server+'</span>';
+  // First user tap on the video unmutes + resumes (after muted autoplay).
+  var v=$('vv');
+  v.onclick=function(){
+    if(v.muted){v.muted=false;v.play().catch(function(){});}
+    else if(v.paused){v.play().catch(function(){});}
+  };
 }
 
 function proxyUrl(url, referer){
@@ -328,6 +334,21 @@ function proxyUrl(url, referer){
 function playHLS(url){
   var v=$('vv');
   if(hls){hls.destroy();hls=null}
+  v.muted = true;            // muted lets the browser autoplay without a gesture
+  v.autoplay = true;
+
+  function tryPlay(){
+    var p = v.play();
+    if(p && p.catch){
+      p.then(function(){ if(v.muted){ $('pSub').textContent='🔊 Click video to enable sound'; } })
+       .catch(function(e){
+          console.log('play() rejected:', e.name, e.message);
+          // Autoplay blocked despite mute (rare) -> let the user click the overlay.
+          setOverlay('▶️','Click to play','Autoplay was blocked by the browser', v.error&&v.error.message);
+        });
+    }
+  }
+  window.__vvTryPlay = tryPlay;
 
   // `url` is either the raw m3u8 (then we proxy it) or already a
   // /api/proxy URL (then use it as-is). The proxy handles CORS +
@@ -344,7 +365,7 @@ function playHLS(url){
     hls.attachMedia(v);
     hls.on(Hls.Events.MANIFEST_PARSED,function(){
       console.log('HLS manifest parsed, playing...');
-      v.play().catch(function(e){console.log('play() rejected:',e.message)});
+      tryPlay();
     });
     hls.on(Hls.Events.ERROR,function(e,d){
       console.error('HLS error:', d.type, d.details, 'fatal:', d.fatal);
@@ -357,7 +378,7 @@ function playHLS(url){
     });
   }else if(v.canPlayType('application/vnd.apple.mpegurl')){
     v.src=proxyUrl;
-    v.onloadedmetadata=function(){v.play().catch(function(){})};
+    v.onloadedmetadata=function(){tryPlay();};
   }else{
     setOverlay('❌','HLS not supported');
   }
