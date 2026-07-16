@@ -225,6 +225,9 @@ router.get("/proxy", async (req, res): Promise<void> => {
   );
 
   try {
+    const isPlaylistBody = (body: string): boolean =>
+      /^#EXTM3U/.test(body) || /\.m3u8(\?|$)/.test(urlParam);
+
     const upstream = await axios.get(urlParam, {
       responseType: "stream",
       timeout: 30000,
@@ -242,14 +245,11 @@ router.get("/proxy", async (req, res): Promise<void> => {
     const contentType = upstream.headers["content-type"] as string | undefined;
     const contentLength = upstream.headers["content-length"] as string | undefined;
 
-    if (contentType) res.setHeader("Content-Type", contentType);
-    if (contentLength) res.setHeader("Content-Length", contentLength);
-
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "Range");
     res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length");
 
-    if (contentType?.includes("mpegurl") || urlParam.includes(".m3u8")) {
+    if (isPlaylistBody || contentType?.includes("mpegurl") || urlParam.includes(".m3u8")) {
       const chunks: Buffer[] = [];
       upstream.data.on("data", (chunk: Buffer) => chunks.push(chunk));
       upstream.data.on("end", () => {
@@ -262,8 +262,11 @@ router.get("/proxy", async (req, res): Promise<void> => {
         // browser fetches it through this proxy (same-origin, CORS-clean).
         // Handles three cases the CDN actually emits:
         //   - absolute http(s) URL
-        //   - root-absolute path  (/cdn/abc)  -> origin + path   (was buggy: double /cdn/)
+        //   - root-absolute path  (/cdn/abc)  -> origin + path
         //   - relative path       (seg-1.ts)  -> baseUrl + path
+        // This needs to run on EVERY playlist level (master -> variant ->
+        // segments) because the CDN returns each with a bogus
+        // `image/jpeg` content-type and root-absolute segment paths.
         const toProxy = (raw: string): string => {
           const abs = raw.startsWith("http")
             ? raw
@@ -288,6 +291,9 @@ router.get("/proxy", async (req, res): Promise<void> => {
           })
           .join("\n");
 
+        // Always advertise a correct HLS content-type. The upstream CDN
+        // lies with `image/jpeg`, which makes hls.js refuse the level
+        // (levelLoadError). Force the correct type on every level.
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
         res.removeHeader("Content-Length");
         res.send(rewritten);

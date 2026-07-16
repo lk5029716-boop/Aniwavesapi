@@ -329,12 +329,17 @@ function playHLS(url){
   var v=$('vv');
   if(hls){hls.destroy();hls=null}
 
-  // Proxy the m3u8 through our server to handle CORS / CDN restrictions
-  var proxyUrl = BASE+'/api/proxy?url='+encodeURIComponent(url);
-  console.log('playHLS proxy URL:', proxyUrl);
+  // `url` is either the raw m3u8 (then we proxy it) or already a
+  // /api/proxy URL (then use it as-is). The proxy handles CORS +
+  // the CDN's bogus image/jpeg content-type. Always send the
+  // echovideo referer so the proxy can set the right Origin upstream.
+  var proxyUrl = url.indexOf('/api/proxy') !== -1
+    ? url
+    : BASE+'/api/proxy?url='+encodeURIComponent(url)+'&referer='+encodeURIComponent('https://play.echovideo.ru/');
+  console.log('playHLS proxy URL:', proxyUrl.slice(0,120));
 
   if(window.Hls&&Hls.isSupported()){
-    hls=new Hls({enableWorker:true});
+    hls=new Hls({enableWorker:true, lowLatencyMode:false});
     hls.loadSource(proxyUrl);
     hls.attachMedia(v);
     hls.on(Hls.Events.MANIFEST_PARSED,function(){
@@ -344,6 +349,9 @@ function playHLS(url){
     hls.on(Hls.Events.ERROR,function(e,d){
       console.error('HLS error:', d.type, d.details, 'fatal:', d.fatal);
       if(d.fatal){
+        // Try to recover once for network/level errors before giving up.
+        if(d.type===Hls.ErrorTypes.NETWORK_ERROR){hls.startLoad();return;}
+        if(d.type===Hls.ErrorTypes.MEDIA_ERROR){hls.recoverMediaError();return;}
         setOverlay('❌','Playback error: '+d.details);
       }
     });
@@ -428,7 +436,13 @@ function tryNextServer(servers,idx,epId,type){
     .then(function(r){return r.json()})
     .then(function(d){
       console.log('stream response for', srv.name, ':', d);
-      if(d.m3u8){showVideo(srv.name);playHLS(d.m3u8)}
+      if(d.m3u8){
+        showVideo(srv.name);
+        // Prefer the server-side proxied (CORS-clean, correct content-type)
+        // URL when present; fall back to proxying the raw m3u8 ourselves.
+        var src = (d.proxiedM3u8 && d.proxiedM3u8.length) ? d.proxiedM3u8 : d.m3u8;
+        playHLS(src);
+      }
       else if(d.error){tryNextServer(servers,idx+1,epId,type)}
       else{tryNextServer(servers,idx+1,epId,type);}
     })

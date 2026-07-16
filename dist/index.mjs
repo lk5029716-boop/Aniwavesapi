@@ -1642,6 +1642,7 @@ router2.get("/proxy", async (req, res) => {
     "proxying stream URL"
   );
   try {
+    const isPlaylistBody = (body) => /^#EXTM3U/.test(body) || /\.m3u8(\?|$)/.test(urlParam);
     const upstream = await axios5.get(urlParam, {
       responseType: "stream",
       timeout: 3e4,
@@ -1656,12 +1657,10 @@ router2.get("/proxy", async (req, res) => {
     });
     const contentType = upstream.headers["content-type"];
     const contentLength = upstream.headers["content-length"];
-    if (contentType) res.setHeader("Content-Type", contentType);
-    if (contentLength) res.setHeader("Content-Length", contentLength);
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "Range");
     res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length");
-    if (contentType?.includes("mpegurl") || urlParam.includes(".m3u8")) {
+    if (isPlaylistBody || contentType?.includes("mpegurl") || urlParam.includes(".m3u8")) {
       const chunks = [];
       upstream.data.on("data", (chunk) => chunks.push(chunk));
       upstream.data.on("end", () => {
