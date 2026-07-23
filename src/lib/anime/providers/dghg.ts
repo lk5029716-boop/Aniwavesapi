@@ -1,24 +1,25 @@
 /**
  * DGHG (DoodStream / PlayMogo / myvidplay) extractor.
  *
- * Uses curl_cffi (Chrome TLS impersonation) via Python subprocess to bypass
- * Cloudflare JA3/JA4 checks on playmogo.com / myvidplay.com.
+ * PlayMogo / myvidplay sit behind an ACTIVE Cloudflare challenge (Turnstile /
+ * "Just a moment..."). A server-side curl_cffi request re-triggers that
+ * challenge every time, so we CANNOT scrape it with a separate HTTP call.
  *
- * Extraction chain:
- *   1. Fetch embed page with curl_cffi (Chrome impersonation)
- *   2. Extract /pass_md5/<hash>/<token> from page HTML
- *   3. Call /pass_md5/<hash>/<token> → get base CDN URL
- *   4. Return base + /index-f1-v1-a1.m3u8
+ * Instead we do the ENTIRE extraction inside a real headless browser:
+ *   1. Launch chromium, navigate to the embed (CF clears in-context).
+ *   2. Intercept the /pass_md5/<hash>/<token> XHR the player fires once the
+ *      challenge is solved.
+ *   3. Fetch that endpoint IN the same cleared context -> it returns the base
+ *      CDN m3u8 URL.
+ *   4. Return that m3u8.
+ *
+ * This is reliable because the browser context is already CF-cleared; no second
+ * request ever hits Cloudflare.
  */
 
-import { execFileSync } from "child_process";
 import { chromium, type Browser, type BrowserContext } from "playwright";
 import { logger } from "../../logger.js";
 import type { StreamSource, SkipTime } from "../types.js";
-
-type DghgScriptResult =
-  | { ok: true; m3u8: string; referer: string; expiry: number }
-  | { ok: false; error: string };
 
 export function isDghgEmbedUrl(url: string): boolean {
   try {
@@ -37,71 +38,80 @@ export function isDghgServer(serverName: string): boolean {
 export async function extractDghg(
   embedUrl: string,
   skipData?: { intro?: [number, number]; outro?: [number, number] },
-  proxyUrl?: string | null
+  _proxyUrl?: string | null
 ): Promise<StreamSource | null> {
   logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] start");
 
-  // PlayMogo / myvidplay sit behind an ACTIVE Cloudflare challenge ("Just a
-  // moment..."). curl_cffi TLS-impersonation is NOT enough -- CF serves the
-  // interstitial instead of the page containing /pass_md5/. We solve the
-  // challenge in a real headless browser, steal the cf_clearance cookie + UA,
-  // and feed them to the Python scraper so its request clears CF.
-  const cf = await solveCloudflare(embedUrl).catch((e) => {
-    logger.warn({ error: String(e).slice(0, 120) }, "[DGHG] CF solve failed, continuing without");
+  const host = (() => { try { return new URL(embedUrl).hostname; } catch { return ""; } })();
+  if (!host.includes("myvidplay") && !host.includes("playmogo")) {
+    logger.warn({ embedUrl }, "[DGHG] not a dghg host, skipping");
     return null;
-  });
-
-  // Try multiple possible scraper paths (Render env var, Docker default, relative)
-  const envPath = process.env["ANIWAVES_SCRAPER_PATH"];
-  const candidatePaths = [
-    envPath,
-    "/app/aniwaves_scraper.py",
-    "/opt/render/project/src/aniwaves_scraper.py",
-    "aniwaves_scraper.py",
-  ].filter(Boolean) as string[];
-
-  let scraperPath = candidatePaths[0] ?? "/app/aniwaves_scraper.py";
-  for (const p of candidatePaths) {
-    try {
-      execFileSync("test", ["-f", p], { timeout: 3000 });
-      scraperPath = p;
-      logger.info({ scraperPath }, "[DGHG] found scraper at");
-      break;
-    } catch {
-      continue;
-    }
   }
 
+  let browser: Browser | null = null;
   try {
-    const env = { ...process.env };
-    if (proxyUrl) {
-      env["ANIWAVES_PROXY_URL"] = proxyUrl;
-      logger.info({ proxyUrl: proxyUrl.slice(0, 60) }, "[DGHG] using proxy");
-    }
-    if (cf) {
-      env["DGHG_CF_COOKIES"] = JSON.stringify(cf.cookies);
-      env["DGHG_CF_UA"] = cf.userAgent;
-      logger.info({ n: cf.cookies.length }, "[DGHG] passing CF clearance to scraper");
-    }
-    // CF was solved on the post-redirect host (myvidplay -> playmogo), so the
-    // clearance cookie is scoped to that domain. Pass the FINAL url the browser
-    // landed on to the scraper, otherwise it re-requests myvidplay and 403s again.
-    const scrapeUrl = cf?.finalUrl || embedUrl;
-    logger.info({ scrapeUrl: scrapeUrl.slice(0, 90) }, "[DGHG] scraping resolved url");
-    const result = execFileSync(
-      "python3",
-      [scraperPath, "--server", scrapeUrl],
-      { timeout: 15_000, encoding: "utf8", env }
-    ).trim();
+    browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+    });
+    const ctx: BrowserContext = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      viewport: { width: 1280, height: 800 },
+    });
+    const page = await ctx.newPage();
 
-    const parsed = JSON.parse(result) as DghgScriptResult;
+    let passMd5Url: string | null = null;
+    let m3u8: string | null = null;
+    page.on("response", async (resp) => {
+      const u = resp.url();
+      if (/\/pass_md5\//i.test(u)) {
+        passMd5Url = u;
+        try {
+          const body = await resp.text();
+          const hit = (body.match(/https?:\/\/[^\s"')]+\.m3u8[^\s"')]*/i)
+            || (body.match(/https?:\/\/[^\s"')]+/i));
+          if (hit) m3u8 = hit[0];
+        } catch { /* body already consumed */ }
+      }
+    });
 
-    if (!parsed.ok) {
-      logger.warn({ error: parsed.error }, "[DGHG] failed");
+    // Retry the page load a few times: CF's challenge is probabilistic, but the
+    // first paint usually clears and the player fires /pass_md5/ immediately.
+    let cleared = false;
+    for (let attempt = 1; attempt <= 4 && !m3u8; attempt++) {
+      try {
+        await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      } catch (navErr) {
+        logger.warn({ error: String(navErr).slice(0, 100) }, "[DGHG] goto error, retrying");
+      }
+      // wait for cf_clearance + player XHR
+      for (let i = 0; i < 20 && !m3u8; i++) {
+        await page.waitForTimeout(1000);
+      }
+      cleared = (await ctx.cookies()).some((c) => c.name === "cf_clearance");
+      logger.info({ attempt, cfClearance: cleared, passMd5: !!passMd5Url, m3u8: !!m3u8 }, "[DGHG] load attempt");
+    }
+
+    if (!m3u8 && passMd5Url) {
+      // Fallback: fetch the pass_md5 endpoint in the cleared context.
+      try {
+        const r = await page.evaluate(async (url) => {
+          const res = await fetch(url, { credentials: "include" });
+          return await res.text();
+        }, passMd5Url);
+        const hit = (r.match(/https?:\/\/[^\s"')]+\.m3u8[^\s"')]*/i)) || (r.match(/https?:\/\/[^\s"')]+/i));
+        if (hit) m3u8 = hit[0];
+      } catch (e) {
+        logger.warn({ error: String(e).slice(0, 120) }, "[DGHG] pass_md5 fetch failed");
+      }
+    }
+
+    if (!m3u8) {
+      logger.warn({ cfClearance: cleared }, "[DGHG] could not extract m3u8 (CF challenge not cleared or player XHR missed)");
       return null;
     }
 
-    logger.info({ m3u8: parsed.m3u8.slice(0, 80) }, "[DGHG] OK");
+    logger.info({ m3u8: m3u8.slice(0, 80) }, "[DGHG] OK");
 
     let intro: SkipTime | null = null;
     let outro: SkipTime | null = null;
@@ -115,76 +125,14 @@ export async function extractDghg(
     return {
       type: "direct",
       provider: "dghg",
-      m3u8: parsed.m3u8,
+      m3u8,
       subtitles: [],
       thumbnails: null,
       intro,
       outro,
     };
-  } catch (err) {
-    const e = err as Error & { stderr?: Buffer; status?: number };
-    logger.warn(
-      { error: e.message.slice(0, 120), stderr: e.stderr?.toString().slice(0, 200) },
-      "[DGHG] error, skipping"
-    );
-    return null;
-  }
-}
-
-/**
- * Solve Cloudflare's managed challenge for a PlayMogo / myvidplay embed URL.
- * Returns the cookies (incl. cf_clearance) + the browser UA. Returns null if we
- * couldn't clear CF within the timeout (caller falls back gracefully).
- *
- * NOTE: requires the chromium binary (`playwright install chromium`). On
- * Render/Docker the browser is already provisioned by the existing Playwright
- * usage in this repo (test_dghg.cjs, playwright-extractor.ts).
- */
-async function solveCloudflare(embedUrl: string): Promise<{ cookies: { name: string; value: string; domain?: string }[]; userAgent: string; finalUrl?: string } | null> {
-  const host = (() => { try { return new URL(embedUrl).hostname; } catch { return ""; } })();
-  if (!host.includes("myvidplay") && !host.includes("playmogo")) return null;
-
-  let browser: Browser | null = null;
-  try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process", "--no-zygote"],
-    });
-    const ctx: BrowserContext = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      viewport: { width: 1280, height: 800 },
-    });
-    const page = await ctx.newPage();
-    page.on("console", (mm) => logger.debug({ cfConsole: mm.text().slice(0, 120) }, "[DGHG] CF page console"));
-    let finalUrl = embedUrl;
-    try {
-      const resp = await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-      finalUrl = page.url();
-      logger.info({ status: resp?.status(), finalUrl }, "[DGHG] CF page loaded");
-    } catch (navErr) {
-      logger.warn({ error: String(navErr).slice(0, 120) }, "[DGHG] CF goto error (continuing to wait for cookie)");
-    }
-
-    // Wait until Cloudflare drops the challenge: cf_clearance cookie appears
-    // and the page is no longer the "Just a moment..." interstitial.
-    const deadline = Date.now() + 45_000;
-    let cleared = false;
-    while (Date.now() < deadline) {
-      const cookies = await ctx.cookies();
-      cleared = cookies.some((c) => c.name === "cf_clearance");
-      const body = (await page.content().catch(() => "")) || "";
-      const stillChallenge = /just a moment|checking your browser|challenge-platform/i.test(body);
-      if (cleared && !stillChallenge) break;
-      await page.waitForTimeout(1500);
-    }
-
-    const cookies = (await ctx.cookies()).map((c) => ({ name: c.name, value: c.value, domain: c.domain }));
-    const userAgent = (await page.evaluate(() => navigator.userAgent).catch(() => "")) as string;
-    const ok = cookies.some((c) => c.name === "cf_clearance");
-    logger.info({ cfClearance: ok, cookieCount: cookies.length, userAgent: userAgent.slice(0, 40) }, "[DGHG] CF solve done");
-    return ok ? { cookies, userAgent, finalUrl } : null;
   } catch (e) {
-    logger.warn({ error: String(e).slice(0, 200) }, "[DGHG] CF solve exception");
+    logger.warn({ error: String(e).slice(0, 200) }, "[DGHG] exception, skipping");
     return null;
   } finally {
     await browser?.close().catch(() => {});
