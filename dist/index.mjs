@@ -1,3 +1,290 @@
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+
+// src/lib/logger.ts
+import pino from "pino";
+var isProduction, logger;
+var init_logger = __esm({
+  "src/lib/logger.ts"() {
+    isProduction = process.env.NODE_ENV === "production";
+    logger = pino({
+      level: process.env.LOG_LEVEL ?? "info",
+      redact: [
+        "req.headers.authorization",
+        "req.headers.cookie",
+        "res.headers['set-cookie']"
+      ],
+      ...isProduction ? {} : {
+        transport: {
+          target: "pino-pretty",
+          options: { colorize: true }
+        }
+      }
+    });
+  }
+});
+
+// src/lib/anime/providers/dghg.ts
+var dghg_exports = {};
+__export(dghg_exports, {
+  extractDghg: () => extractDghg,
+  isDghgEmbedUrl: () => isDghgEmbedUrl,
+  isDghgServer: () => isDghgServer
+});
+import { chromium } from "playwright";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+function dghgHttpScript() {
+  if (process.env["DGHG_HTTP_SCRIPT"]) return process.env["DGHG_HTTP_SCRIPT"];
+  const dir = import.meta.dirname || process.cwd();
+  const candidates = [
+    join(dir, "dghg_http.py"),
+    join(process.cwd(), "dghg_http.py"),
+    "/opt/render/project/src/dghg_http.py",
+    join(dir, "..", "..", "..", "dghg_http.py")
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return candidates[0];
+}
+function pythonBin() {
+  return process.env["DGHG_PYTHON"] || "python3";
+}
+function isDghgEmbedUrl(url) {
+  try {
+    const host = new URL(url).hostname;
+    return host.includes("myvidplay") || host.includes("playmogo");
+  } catch {
+    return false;
+  }
+}
+function isDghgServer(serverName) {
+  const n = serverName.toLowerCase();
+  return n.includes("dghg") || n.includes("dood") || n.includes("playmogo");
+}
+function extractM3u8Url(body) {
+  const candidates = [];
+  let idx = 0;
+  while (true) {
+    const start = body.indexOf("http", idx);
+    if (start === -1) break;
+    let end = start;
+    while (end < body.length) {
+      const ch = body[end];
+      if (ch === '"' || ch === "'" || ch === " " || ch === "\n" || ch === "\r" || ch === ")" || ch === ">" || ch === "<") break;
+      end++;
+    }
+    if (end > start) candidates.push(body.slice(start, end));
+    idx = end + 1;
+  }
+  if (candidates.length === 0) return null;
+  const m3u8 = candidates.find((c) => /\.m3u8/i.test(c));
+  const cdn = candidates.find((c) => /cloudatacdn\.com|cdn|\.m3u8/i.test(c));
+  const clean = candidates.find((c) => !/http-equiv|w3\.org|schema\.org/i.test(c));
+  return m3u8 ?? cdn ?? clean ?? null;
+}
+async function extractDghgHttp(embedUrl) {
+  try {
+    const out = execFileSync(pythonBin(), [dghgHttpScript(), embedUrl], {
+      timeout: 25e3,
+      encoding: "utf8",
+      env: { ...process.env, PYTHONUNBUFFERED: "1" }
+    });
+    const parsed = JSON.parse(out.trim().split("\n").pop() || "{}");
+    if (parsed.ok && parsed.m3u8) {
+      logger.info({ m3u8: String(parsed.m3u8).slice(0, 80) }, "[DGHG-http] OK");
+      return { m3u8: parsed.m3u8, cfWall: false };
+    }
+    logger.warn({ reason: parsed.reason, status: parsed.status }, "[DGHG-http] no m3u8");
+    return { m3u8: null, cfWall: parsed.reason === "cf-wall", reason: parsed.reason };
+  } catch (e) {
+    logger.warn({ error: String(e?.message || e).slice(0, 160) }, "[DGHG-http] exec failed");
+    return { m3u8: null, cfWall: false, reason: "exec-failed" };
+  }
+}
+async function extractDghg(embedUrl, skipData, _proxyUrl) {
+  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] start");
+  const host = (() => {
+    try {
+      return new URL(embedUrl).hostname;
+    } catch {
+      return "";
+    }
+  })();
+  if (!host.includes("myvidplay") && !host.includes("playmogo")) {
+    logger.warn({ embedUrl }, "[DGHG] not a dghg host, skipping");
+    return null;
+  }
+  const http = await extractDghgHttp(embedUrl);
+  if (http.m3u8) {
+    let intro = null;
+    let outro = null;
+    if (skipData?.intro && (skipData.intro[0] !== 0 || skipData.intro[1] !== 0)) {
+      intro = { start: skipData.intro[0], end: skipData.intro[1] };
+    }
+    if (skipData?.outro && (skipData.outro[0] !== 0 || skipData.outro[1] !== 0)) {
+      outro = { start: skipData.outro[0], end: skipData.outro[1] };
+    }
+    return { type: "direct", provider: "dghg", m3u8: http.m3u8, subtitles: [], thumbnails: null, intro, outro };
+  }
+  if (!process.env["DGHG_BROWSER_FALLBACK"]) {
+    const reason = http.reason || (http.cfWall ? "cf-wall" : "http-failed");
+    logger.warn({ cfWall: http.cfWall, reason }, "[DGHG] HTTP path failed; browser fallback disabled (set DGHG_BROWSER_FALLBACK=1 to enable)");
+    throw new Error(`DGHG_HTTP_FAILED:${reason}`);
+  }
+  logger.warn("[DGHG] HTTP path yielded nothing \u2014 falling back to Playwright browser");
+  return extractDghgBrowser(embedUrl, skipData, _proxyUrl);
+}
+async function extractDghgBrowser(embedUrl, skipData, _proxyUrl) {
+  let browser = null;
+  try {
+    const proxyRaw = _proxyUrl || process.env["DGHG_PROXY_URL"] || process.env["HTTPS_PROXY"] || null;
+    let launchProxy;
+    if (proxyRaw) {
+      try {
+        const u = new URL(proxyRaw);
+        launchProxy = {
+          server: `${u.protocol || "http:"}//${u.hostname}${u.port ? ":" + u.port : ""}`
+        };
+        if (u.username) launchProxy.username = decodeURIComponent(u.username);
+        if (u.password) launchProxy.password = decodeURIComponent(u.password);
+      } catch {
+        launchProxy = { server: proxyRaw };
+      }
+      logger.info({ server: launchProxy.server }, "[DGHG-browser] using proxy");
+    }
+    browser = await chromium.launch({
+      headless: true,
+      proxy: launchProxy,
+      args: [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-blink-features=AutomationControlled",
+        "--headless=new"
+      ]
+    });
+    const ctx = await browser.newContext({
+      userAgent: DGHG_UA,
+      viewport: { width: 1366, height: 768 },
+      locale: "en-US",
+      timezoneId: "America/New_York"
+    });
+    const page = await ctx.newPage();
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => void 0 });
+      const navAny = navigator;
+      if (!navAny.chrome) {
+        Object.defineProperty(navigator, "chrome", { get: () => ({ runtime: {} }), configurable: true });
+      }
+    });
+    let m3u8 = null;
+    let passMd5Url = null;
+    page.on("response", (resp) => {
+      if (/\/pass_md5\//i.test(resp.url())) passMd5Url = resp.url();
+    });
+    for (let attempt = 1; attempt <= 3 && !m3u8; attempt++) {
+      try {
+        await page.goto(embedUrl, { waitUntil: "commit", timeout: 25e3 });
+      } catch (navErr) {
+        logger.warn({ error: String(navErr).slice(0, 100) }, "[DGHG-browser] goto error, retrying");
+      }
+      try {
+        await page.waitForFunction(
+          () => document.title && !/just a moment/i.test(document.title),
+          { timeout: 2e4 }
+        );
+      } catch {
+        logger.warn({ title: await page.title().catch(() => "") }, "[DGHG-browser] CF wall still up");
+      }
+      const resp = await page.waitForResponse((r) => /\/pass_md5\//i.test(r.url()), { timeout: 2e4 }).catch(() => null);
+      if (resp) {
+        passMd5Url = resp.url();
+        try {
+          const body = await resp.text();
+          const hit = extractM3u8Url(body);
+          if (hit) m3u8 = hit;
+        } catch (e) {
+          logger.warn({ error: String(e).slice(0, 120) }, "[DGHG-browser] pass_md5 body read failed");
+        }
+      }
+      if (!m3u8) {
+        try {
+          const dom = await page.evaluate(() => {
+            const v = document.querySelector("video");
+            const s = document.querySelector("source");
+            const a = document.querySelector("a[href*='.m3u8']");
+            return { v: v?.getAttribute("src") || null, s: s?.getAttribute("src") || null, a: a?.getAttribute("href") || null };
+          });
+          const cand = dom.v || dom.s || dom.a;
+          if (cand && cand.includes(".m3u8")) m3u8 = cand;
+        } catch {
+        }
+      }
+      logger.info({ attempt, passMd5: !!passMd5Url, m3u8: !!m3u8 }, "[DGHG-browser] load attempt");
+    }
+    if (!m3u8) {
+      const finalUrl = page.url();
+      let title = "";
+      let snippet = "";
+      try {
+        title = await page.title();
+        snippet = (await page.content()).slice(0, 400);
+      } catch {
+      }
+      logger.warn({ passMd5: !!passMd5Url, finalUrl, title }, "[DGHG-browser] could not extract m3u8");
+      return {
+        type: "direct",
+        provider: "dghg",
+        m3u8: null,
+        subtitles: [],
+        thumbnails: null,
+        intro: null,
+        outro: null,
+        _diag: {
+          path: "browser",
+          cfWallUp: /just a moment/i.test(title),
+          proxyUsed: !!launchProxy,
+          passMd5Seen: !!passMd5Url,
+          finalUrl,
+          title,
+          pageSnippet: snippet
+        }
+      };
+    }
+    logger.info({ m3u8: m3u8.slice(0, 80) }, "[DGHG-browser] OK");
+    let intro = null;
+    let outro = null;
+    if (skipData?.intro && (skipData.intro[0] !== 0 || skipData.intro[1] !== 0)) {
+      intro = { start: skipData.intro[0], end: skipData.intro[1] };
+    }
+    if (skipData?.outro && (skipData.outro[0] !== 0 || skipData.outro[1] !== 0)) {
+      outro = { start: skipData.outro[0], end: skipData.outro[1] };
+    }
+    return { type: "direct", provider: "dghg", m3u8, subtitles: [], thumbnails: null, intro, outro };
+  } catch (e) {
+    logger.warn({ error: String(e).slice(0, 200) }, "[DGHG-browser] exception, skipping");
+    return null;
+  } finally {
+    await browser?.close().catch(() => {
+    });
+  }
+}
+var init_dghg = __esm({
+  "src/lib/anime/providers/dghg.ts"() {
+    init_logger();
+  }
+});
+
 // src/app.ts
 import express from "express";
 import cors from "cors";
@@ -39,8 +326,8 @@ router.get("/health", async (_req, res) => {
   }
   if (chromiumPath) {
     try {
-      const { chromium } = await import("playwright");
-      const browser = await chromium.launch({
+      const { chromium: chromium2 } = await import("playwright");
+      const browser = await chromium2.launch({
         headless: true,
         args: ["--no-sandbox", "--disable-setuid-sandbox"]
       });
@@ -78,26 +365,9 @@ import { Router as Router2 } from "express";
 import axios5 from "axios";
 
 // src/lib/anime/scraper.ts
+init_logger();
 import axios from "axios";
 import * as cheerio from "cheerio";
-
-// src/lib/logger.ts
-import pino from "pino";
-var isProduction = process.env.NODE_ENV === "production";
-var logger = pino({
-  level: process.env.LOG_LEVEL ?? "info",
-  redact: [
-    "req.headers.authorization",
-    "req.headers.cookie",
-    "res.headers['set-cookie']"
-  ],
-  ...isProduction ? {} : {
-    transport: {
-      target: "pino-pretty",
-      options: { colorize: true }
-    }
-  }
-});
 
 // src/lib/anime/cache.ts
 import NodeCache from "node-cache";
@@ -110,6 +380,7 @@ function cacheSet(key, value, ttl = 300) {
 }
 
 // src/lib/anime/proxy.ts
+init_logger();
 var PROXY_BASE = (process.env["ANIWAVES_PROXY_URL"] ?? "").trim();
 var PROXIED_HOSTS = [
   "aniwaves.ru",
@@ -446,7 +717,11 @@ async function getEmbedUrl(linkId, refererAnimeId) {
   return data.result;
 }
 
+// src/lib/anime/providers/index.ts
+init_logger();
+
 // src/lib/anime/providers/vidplay.ts
+init_logger();
 import axios2 from "axios";
 import * as cheerio2 from "cheerio";
 import CryptoJS from "crypto-js";
@@ -727,6 +1002,7 @@ function isVidplayHost(embedUrl) {
 }
 
 // src/lib/anime/providers/megacloud.ts
+init_logger();
 import axios3 from "axios";
 import * as cheerio3 from "cheerio";
 import CryptoJS2 from "crypto-js";
@@ -935,9 +1211,11 @@ function isMegacloudHost(embedUrl) {
 }
 
 // src/lib/anime/providers/echovideo.ts
+init_logger();
 import axios4 from "axios";
 
 // src/lib/anime/providers/playwright-extractor.ts
+init_logger();
 import https from "https";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 var ANIWAVES_REFERER = "https://aniwaves.ru/";
@@ -981,8 +1259,8 @@ async function extractViaPlaywright(embedUrl, providerName, skipData) {
   );
   let browser = null;
   try {
-    const { chromium } = await import("playwright-core");
-    browser = await chromium.launch({
+    const { chromium: chromium2 } = await import("playwright-core");
+    browser = await chromium2.launch({
       headless: true,
       args: [
         "--no-sandbox",
@@ -1316,6 +1594,7 @@ function isEchovideoHost(url) {
 }
 
 // src/lib/anime/providers/weneverbeenfree.ts
+init_logger();
 import https2 from "https";
 var UA2 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 var ANIWAVES_REFERER2 = "https://aniwaves.ru/";
@@ -1584,85 +1863,8 @@ function isWeneverbeenfreeHost(url) {
   }
 }
 
-// src/lib/anime/providers/dghg.ts
-import { execFileSync } from "child_process";
-function isDghgEmbedUrl(url) {
-  try {
-    const host = new URL(url).hostname;
-    return host.includes("myvidplay") || host.includes("playmogo");
-  } catch {
-    return false;
-  }
-}
-function isDghgServer(serverName) {
-  const n = serverName.toLowerCase();
-  return n.includes("dghg") || n.includes("dood") || n.includes("playmogo");
-}
-async function extractDghg(embedUrl, skipData, proxyUrl) {
-  logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] start");
-  const envPath = process.env["ANIWAVES_SCRAPER_PATH"];
-  const candidatePaths = [
-    envPath,
-    "/app/aniwaves_scraper.py",
-    "/opt/render/project/src/aniwaves_scraper.py",
-    "aniwaves_scraper.py"
-  ].filter(Boolean);
-  let scraperPath = candidatePaths[0] ?? "/app/aniwaves_scraper.py";
-  for (const p of candidatePaths) {
-    try {
-      execFileSync("test", ["-f", p], { timeout: 3e3 });
-      scraperPath = p;
-      logger.info({ scraperPath }, "[DGHG] found scraper at");
-      break;
-    } catch {
-      continue;
-    }
-  }
-  try {
-    const env = { ...process.env };
-    if (proxyUrl) {
-      env["ANIWAVES_PROXY_URL"] = proxyUrl;
-      logger.info({ proxyUrl: proxyUrl.slice(0, 60) }, "[DGHG] using proxy");
-    }
-    const result = execFileSync(
-      "python3",
-      [scraperPath, "--server", embedUrl],
-      { timeout: 15e3, encoding: "utf8", env }
-    ).trim();
-    const parsed = JSON.parse(result);
-    if (!parsed.ok) {
-      logger.warn({ error: parsed.error }, "[DGHG] failed");
-      return null;
-    }
-    logger.info({ m3u8: parsed.m3u8.slice(0, 80) }, "[DGHG] OK");
-    let intro = null;
-    let outro = null;
-    if (skipData?.intro && (skipData.intro[0] !== 0 || skipData.intro[1] !== 0)) {
-      intro = { start: skipData.intro[0], end: skipData.intro[1] };
-    }
-    if (skipData?.outro && (skipData.outro[0] !== 0 || skipData.outro[1] !== 0)) {
-      outro = { start: skipData.outro[0], end: skipData.outro[1] };
-    }
-    return {
-      type: "direct",
-      provider: "dghg",
-      m3u8: parsed.m3u8,
-      subtitles: [],
-      thumbnails: null,
-      intro,
-      outro
-    };
-  } catch (err) {
-    const e = err;
-    logger.warn(
-      { error: e.message.slice(0, 120), stderr: e.stderr?.toString().slice(0, 200) },
-      "[DGHG] error, skipping"
-    );
-    return null;
-  }
-}
-
 // src/lib/anime/providers/index.ts
+init_dghg();
 var VIDPLAY_LIKE_HOSTS = [
   "vidplay.online",
   "vidplay.lol",
@@ -1842,16 +2044,16 @@ router2.get("/debug-dghg", async (req, res) => {
     res.status(400).json({ error: "embedUrl query param required" });
     return;
   }
-  const scraperPath = process.env["ANIWAVES_SCRAPER_PATH"] || "/opt/render/project/src/aniwaves_scraper.py";
   try {
-    const { execFileSync: execFileSync2 } = await import("child_process");
-    const result = execFileSync2(
-      "python3",
-      [scraperPath, "--server", embedUrl],
-      { timeout: 3e4, encoding: "utf8", env: { ...process.env } }
-    ).trim();
-    const parsed = JSON.parse(result);
-    res.json({ ok: true, result: parsed });
+    const { extractDghg: extractDghg2 } = await Promise.resolve().then(() => (init_dghg(), dghg_exports));
+    const stream = await extractDghg2(embedUrl, void 0, process.env["ANIWAVES_PROXY_URL"] || null);
+    if (stream?.m3u8) {
+      res.json({ ok: true, result: { ok: true, m3u8: stream.m3u8, provider: stream.provider } });
+    } else if (stream?._diag) {
+      res.status(502).json({ ok: false, error: "extractDghg failed", diag: stream._diag });
+    } else {
+      res.status(502).json({ ok: false, error: "extractDghg returned no m3u8" });
+    }
   } catch (err) {
     const e = err;
     res.status(502).json({
@@ -1859,7 +2061,6 @@ router2.get("/debug-dghg", async (req, res) => {
       error: e.message,
       stderr: e.stderr?.toString().slice(0, 500),
       status: e.status,
-      scraperPath,
       embedUrl: embedUrl.slice(0, 100)
     });
   }
@@ -1998,6 +2199,7 @@ router3.use(anime_default);
 var routes_default = router3;
 
 // src/app.ts
+init_logger();
 var __dirname = path.dirname(fileURLToPath(import.meta.url));
 var app = express();
 app.use(
@@ -2025,6 +2227,7 @@ app.use((req, res, next) => {
 var app_default = app;
 
 // src/index.ts
+init_logger();
 var rawPort = process.env["PORT"];
 if (!rawPort) {
   throw new Error(

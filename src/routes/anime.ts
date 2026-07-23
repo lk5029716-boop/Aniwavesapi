@@ -159,20 +159,18 @@ router.get("/debug-dghg", async (req, res): Promise<void> => {
     return;
   }
 
-  // Route through extractDghg (which solves Cloudflare in a real browser
-  // and passes cf_clearance to the scraper). Calling the Python scraper
-  // directly bypasses the CF-solve and always 403s on myvidplay/playmogo.
+  // Route through extractDghg. Primary path is pure-HTTP (Python urllib, which
+  // passes Cloudflare's TLS fingerprint that Node fetch/curl_cffi fail on). No
+  // browser or CF JS-challenge needed, so it works from datacenter IPs (Render).
   try {
     const { extractDghg } = await import("../lib/anime/providers/dghg.js");
     const stream = await extractDghg(embedUrl, undefined, process.env["ANIWAVES_PROXY_URL"] || null);
     if (stream?.m3u8) {
       res.json({ ok: true, result: { ok: true, m3u8: stream.m3u8, provider: stream.provider } });
     } else if ((stream as any)?._diag) {
-      // Surface the structured diagnostics so we can see exactly why it failed
-      // (CF cleared? /pass_md5/ seen? what URL did the page end up on?).
       res.status(502).json({ ok: false, error: "extractDghg failed", diag: (stream as any)._diag });
     } else {
-      res.status(502).json({ ok: false, error: "extractDghg returned no m3u8 (CF solve likely failed)" });
+      res.status(502).json({ ok: false, error: "extractDghg returned no m3u8" });
     }
   } catch (err) {
     const e = err as Error & { stderr?: Buffer; status?: number };
@@ -181,7 +179,6 @@ router.get("/debug-dghg", async (req, res): Promise<void> => {
       error: e.message,
       stderr: e.stderr?.toString().slice(0, 500),
       status: e.status,
-      scraperPath,
       embedUrl: embedUrl.slice(0, 100),
     });
   }

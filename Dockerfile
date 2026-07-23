@@ -24,8 +24,8 @@ RUN npx playwright install chromium
 COPY . .
 RUN npm run build
 
-# Also copy scraper to Render's expected path
-RUN mkdir -p /opt/render/project/src && cp /app/aniwaves_scraper.py /opt/render/project/src/aniwaves_scraper.py
+# Also copy scraper + DGHG HTTP helper to Render's expected path
+RUN mkdir -p /opt/render/project/src && cp /app/aniwaves_scraper.py /opt/render/project/src/aniwaves_scraper.py && cp /app/dghg_http.py /opt/render/project/src/dghg_http.py
 
 ENV ANIWAVES_SCRAPER_PATH=/opt/render/project/src/aniwaves_scraper.py
 ENV NODE_ENV=production

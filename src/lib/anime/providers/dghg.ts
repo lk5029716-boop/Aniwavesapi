@@ -19,11 +19,34 @@
  */
 
 import { chromium, type Browser, type BrowserContext } from "playwright";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { logger } from "../../logger.js";
 import type { StreamSource, SkipTime } from "../types.js";
 
-const DGHG_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+// Python (urllib/OpenSSL, HTTP/1.1) passes Cloudflare's TLS fingerprint where
+// Node's undici fetch and curl_cffi get 403 on /e/<id>/ajax. The DGHG HTTP
+// extraction is done in dghg_http.py for that reason.
+function dghgHttpScript(): string {
+  if (process.env["DGHG_HTTP_SCRIPT"]) return process.env["DGHG_HTTP_SCRIPT"];
+  // Candidate locations: project root (dev), dist (bundled), Render copy, cwd.
+  // Bundle is ESM, so use import.meta.dirname (not __dirname).
+  const dir = import.meta.dirname || process.cwd();
+  const candidates = [
+    join(dir, "dghg_http.py"),
+    join(process.cwd(), "dghg_http.py"),
+    "/opt/render/project/src/dghg_http.py",
+    join(dir, "..", "..", "..", "dghg_http.py"),
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return candidates[0];
+}
+function pythonBin(): string {
+  return process.env["DGHG_PYTHON"] || "python3";
+}
 
 export function isDghgEmbedUrl(url: string): boolean {
   try {
@@ -67,58 +90,30 @@ function extractM3u8Url(body: string): string | null {
   return m3u8 ?? cdn ?? clean ?? null;
 }
 
-/** Extract the /pass_md5/<hash>/<token> URL from the player HTML. */
-function extractPassMd5Url(html: string, origin: string): string | null {
-  const m = html.match(/\/pass_md5\/[^\s"'\\]+/);
-  if (!m) return null;
-  return m[0].startsWith("http") ? m[0] : `${origin}${m[0]}`;
-}
-
 /**
- * PRIMARY extraction — pure HTTP, no browser, defeats the datacenter-IP block.
- * Returns the m3u8 URL or null (null does NOT mean failure: a CF wall on the
- * ajax doc means we should fall back to the browser path).
+ * PRIMARY extraction — pure HTTP via Python (urllib/OpenSSL), no browser, no
+ * Cloudflare JS challenge. Node's native fetch and curl_cffi get 403 on
+ * /e/<id>/ajax (TLS fingerprint), but Python urllib passes — so we shell out
+ * to dghg_http.py. This defeats the datacenter-IP block that kills the
+ * Playwright path on Render.
  */
-async function extractDghgHttp(embedUrl: string): Promise<{ m3u8: string | null; cfWall: boolean }> {
-  let host: string;
-  let id: string;
+async function extractDghgHttp(embedUrl: string): Promise<{ m3u8: string | null; cfWall: boolean; reason?: string }> {
   try {
-    const u = new URL(embedUrl);
-    host = u.hostname;
-    const seg = u.pathname.split("/").filter(Boolean);
-    id = seg[seg.length - 1] || "";
-  } catch {
-    return { m3u8: null, cfWall: false };
-  }
-  if (!id) return { m3u8: null, cfWall: false };
-
-  const origin = `https://${host}`;
-  const ajaxUrl = `${origin}/e/${id}/ajax`;
-  try {
-    const res = await fetch(ajaxUrl, {
-      headers: { "User-Agent": DGHG_UA, Accept: "text/html,application/xhtml+xml", Referer: ajaxUrl },
-      redirect: "follow",
+    const out = execFileSync(pythonBin(), [dghgHttpScript(), embedUrl], {
+      timeout: 25000,
+      encoding: "utf8",
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
     });
-    const html = await res.text();
-    if (/just a moment/i.test(html) || res.status === 403 || res.status === 503) {
-      logger.warn({ status: res.status }, "[DGHG-http] Cloudflare wall on /e/<id>/ajax — will fall back to browser");
-      return { m3u8: null, cfWall: true };
+    const parsed = JSON.parse(out.trim().split("\n").pop() || "{}");
+    if (parsed.ok && parsed.m3u8) {
+      logger.info({ m3u8: String(parsed.m3u8).slice(0, 80) }, "[DGHG-http] OK");
+      return { m3u8: parsed.m3u8, cfWall: false };
     }
-    const pmUrl = extractPassMd5Url(html, origin);
-    if (!pmUrl) {
-      logger.warn("[DGHG-http] no /pass_md5/ token in ajax HTML");
-      return { m3u8: null, cfWall: false };
-    }
-    const pmRes = await fetch(pmUrl, {
-      headers: { "User-Agent": DGHG_UA, Accept: "*/*", Referer: ajaxUrl, "X-Requested-With": "XMLHttpRequest" },
-    });
-    const body = await pmRes.text();
-    const m3u8 = extractM3u8Url(body);
-    if (m3u8) logger.info({ m3u8: m3u8.slice(0, 80) }, "[DGHG-http] OK");
-    return { m3u8, cfWall: false };
-  } catch (e) {
-    logger.warn({ error: String(e).slice(0, 160) }, "[DGHG-http] request failed");
-    return { m3u8: null, cfWall: false };
+    logger.warn({ reason: parsed.reason, status: parsed.status }, "[DGHG-http] no m3u8");
+    return { m3u8: null, cfWall: parsed.reason === "cf-wall", reason: parsed.reason };
+  } catch (e: any) {
+    logger.warn({ error: String(e?.message || e).slice(0, 160) }, "[DGHG-http] exec failed");
+    return { m3u8: null, cfWall: false, reason: "exec-failed" };
   }
 }
 
@@ -149,8 +144,16 @@ export async function extractDghg(
     return { type: "direct", provider: "dghg", m3u8: http.m3u8, subtitles: [], thumbnails: null, intro, outro };
   }
 
-  // 2) Fallback: Playwright (only helps on residential IPs; kept for hosts that
-  //    start challenging the ajax doc). Datacenter IPs will still fail here.
+  // 2) Fallback: Playwright. Only if explicitly enabled — it is blocked on
+  //    datacenter IPs (Cloudflare managed challenge won't clear), so running it
+  //    on Render just wastes ~60s before failing. Enable with DGHG_BROWSER_FALLBACK=1
+  //    only on hosts/networks where the HTTP path is CF-walled but a residential
+  //    IP can solve the challenge.
+  if (!process.env["DGHG_BROWSER_FALLBACK"]) {
+    const reason = http.reason || (http.cfWall ? "cf-wall" : "http-failed");
+    logger.warn({ cfWall: http.cfWall, reason }, "[DGHG] HTTP path failed; browser fallback disabled (set DGHG_BROWSER_FALLBACK=1 to enable)");
+    throw new Error(`DGHG_HTTP_FAILED:${reason}`);
+  }
   logger.warn("[DGHG] HTTP path yielded nothing — falling back to Playwright browser");
   return extractDghgBrowser(embedUrl, skipData, _proxyUrl);
 }
