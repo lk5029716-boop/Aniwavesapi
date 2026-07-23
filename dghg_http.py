@@ -11,6 +11,7 @@ Usage:  python3 dghg_http.py <embedUrl>
 Prints JSON: {"ok": true, "m3u8": "..."} or {"ok": false, "reason": "..."}
 """
 import json
+import os
 import re
 import sys
 import urllib.request
@@ -19,10 +20,23 @@ import urllib.error
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
+# Optional residential/clean proxy. playmogo strips the /pass_md5/ token for
+# datacenter IPs (Render gets a ~5.6KB token-less page). Routing the
+# request through a clean proxy makes it originate from a trusted IP, so the
+# full token page is served. No proxy = direct (works from residential IPs).
+PROXY = os.environ.get("DGHG_HTTP_PROXY") or os.environ.get("DGHG_HTTP_PROXY") or ""
+
+
+def _opener():
+    if PROXY:
+        return urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
+    return urllib.request.build_opener()
+
 
 def _get(url, headers):
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with _opener().open(req, timeout=15) as r:
         return r.status, r.read().decode("utf-8", "replace")
 
 
