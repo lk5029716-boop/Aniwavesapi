@@ -12,6 +12,7 @@
  */
 
 import { execFileSync } from "child_process";
+import { chromium, type Browser, type BrowserContext } from "playwright";
 import { logger } from "../../logger.js";
 import type { StreamSource, SkipTime } from "../types.js";
 
@@ -40,6 +41,16 @@ export async function extractDghg(
 ): Promise<StreamSource | null> {
   logger.info({ embedUrl: embedUrl.slice(0, 100) }, "[DGHG] start");
 
+  // PlayMogo / myvidplay sit behind an ACTIVE Cloudflare challenge ("Just a
+  // moment..."). curl_cffi TLS-impersonation is NOT enough -- CF serves the
+  // interstitial instead of the page containing /pass_md5/. We solve the
+  // challenge in a real headless browser, steal the cf_clearance cookie + UA,
+  // and feed them to the Python scraper so its request clears CF.
+  const cf = await solveCloudflare(embedUrl).catch((e) => {
+    logger.warn({ error: String(e).slice(0, 120) }, "[DGHG] CF solve failed, continuing without");
+    return null;
+  });
+
   // Try multiple possible scraper paths (Render env var, Docker default, relative)
   const envPath = process.env["ANIWAVES_SCRAPER_PATH"];
   const candidatePaths = [
@@ -66,6 +77,11 @@ export async function extractDghg(
     if (proxyUrl) {
       env["ANIWAVES_PROXY_URL"] = proxyUrl;
       logger.info({ proxyUrl: proxyUrl.slice(0, 60) }, "[DGHG] using proxy");
+    }
+    if (cf) {
+      env["DGHG_CF_COOKIES"] = JSON.stringify(cf.cookies);
+      env["DGHG_CF_UA"] = cf.userAgent;
+      logger.info({ n: cf.cookies.length }, "[DGHG] passing CF clearance to scraper");
     }
     const result = execFileSync(
       "python3",
@@ -107,5 +123,49 @@ export async function extractDghg(
       "[DGHG] error, skipping"
     );
     return null;
+  }
+}
+
+/**
+ * Solve Cloudflare's managed challenge for a PlayMogo / myvidplay embed URL.
+ * Returns the cookies (incl. cf_clearance) + the browser UA. Returns null if we
+ * couldn't clear CF within the timeout (caller falls back gracefully).
+ *
+ * NOTE: requires the chromium binary (`playwright install chromium`). On
+ * Render/Docker the browser is already provisioned by the existing Playwright
+ * usage in this repo (test_dghg.cjs, playwright-extractor.ts).
+ */
+async function solveCloudflare(embedUrl: string): Promise<{ cookies: { name: string; value: string; domain?: string }[]; userAgent: string } | null> {
+  const host = (() => { try { return new URL(embedUrl).hostname; } catch { return ""; } })();
+  if (!host.includes("myvidplay") && !host.includes("playmogo")) return null;
+
+  let browser: Browser | null = null;
+  try {
+    browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+    const ctx: BrowserContext = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      viewport: { width: 1280, height: 800 },
+    });
+    const page = await ctx.newPage();
+    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const cleared = (await ctx.cookies()).some((c) => c.name === "cf_clearance");
+      const body = (await page.content().catch(() => "")) || "";
+      if (cleared && !/just a moment/i.test(body)) break;
+      await page.waitForTimeout(1000);
+    }
+
+    const cookies = (await ctx.cookies()).map((c) => ({ name: c.name, value: c.value, domain: c.domain }));
+    const userAgent = (await page.evaluate(() => navigator.userAgent)) as string;
+    const ok = cookies.some((c) => c.name === "cf_clearance");
+    logger.info({ cfClearance: ok }, "[DGHG] CF solve done");
+    return ok ? { cookies, userAgent } : null;
+  } catch (e) {
+    logger.warn({ error: String(e).slice(0, 120) }, "[DGHG] CF solve exception");
+    return null;
+  } finally {
+    await browser?.close().catch(() => {});
   }
 }
