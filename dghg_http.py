@@ -4,13 +4,18 @@
 Cloudflare only challenges the *pretty* HTML document and TLS fingerprints
 from undici/curl_cffi. Python's stdlib urllib (OpenSSL, HTTP/1.1) passes the
 /e/<id>/ajax endpoint, which embeds the /pass_md5/<hash>/<token> URL. We grab
-that and GET it; the body is the CDN m3u8. This works from datacenter IPs
-(Render) because there is no managed-challenge / Turnstile to solve.
+that and GET it; the body is the CDN m3u8.
+
+IMPORTANT: playmogo serves a *stripped* (token-less) page to datacenter IPs
+(Render gets a ~5.6KB variant with no /pass_md5/ token). Set DGHG_HTTP_PROXY
+to a residential proxy so the request originates from a clean IP and the token
+is served. Without it, datacenter deployments return reason "no-token".
 
 Usage:  python3 dghg_http.py <embedUrl>
 Prints JSON: {"ok": true, "m3u8": "..."} or {"ok": false, "reason": "..."}
 """
 import json
+import os
 import re
 import sys
 import urllib.request
@@ -19,10 +24,23 @@ import urllib.error
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
+# Optional residential proxy. playmogo strips the /pass_md5/ token for
+# datacenter IPs (Render gets a 5.6KB token-less page). A residential proxy
+# makes the request originate from a clean IP and the token is served.
+PROXY = os.environ.get("DGHG_HTTP_PROXY") or ""
+
+
+def _opener():
+    if PROXY:
+        handler = urllib.request.ProxyHandler({"http": PROXY, "https": PROXY})
+        return urllib.request.build_opener(handler)
+    return urllib.request.build_opener()
+
 
 def _get(url, headers):
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=15) as r:
+    opener = _opener()
+    with opener.open(req, timeout=15) as r:
         return r.status, r.read().decode("utf-8", "replace")
 
 
