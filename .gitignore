@@ -6,3 +6,5 @@ dist/
 # debug/test scripts (BYFMS PoW reverse-engineering probes)
 *.mjs
 !/build.mjs
+__pycache__/
+*.pyc
