@@ -137,15 +137,28 @@ export async function extractDghg(
       try {
         // "commit" returns as soon as the server responds -- Cloudflare's
         // challenge page otherwise never fires domcontentloaded (it keeps
-        // reloading), which made goto hang. waitForResponse below catches the
-        // real /pass_md5/ XHR once CF clears.
+        // reloading), which made goto hang.
         await page.goto(embedUrl, { waitUntil: "commit", timeout: 25000 });
       } catch (navErr) {
         logger.warn({ error: String(navErr).slice(0, 100) }, "[DGHG] goto error, retrying");
       }
 
-      // Actively wait for the pass_md5 response, then read ITS body directly
-      // (re-fetching via evaluate returns a different/garbage body).
+      // Cloudflare may set cf_clearance yet STILL show the "Just a moment..."
+      // interstitial (managed Turnstile challenge not finished). Wait until the
+      // REAL player page is present (title is no longer the CF wall) before we
+      // look for /pass_md5/ -- otherwise we grab the challenge page and the
+      // player XHR never fires.
+      try {
+        await page.waitForFunction(
+          () => document.title && !/just a moment/i.test(document.title),
+          { timeout: 20000 },
+        );
+      } catch {
+        logger.warn({ title: await page.title().catch(() => "") }, "[DGHG] CF challenge wall still up after wait");
+      }
+
+      // Actively wait for the pass_md5 response (the player fires it once the
+      // real page is live), then read ITS body directly.
       const resp = await page
         .waitForResponse((r) => /\/pass_md5\//i.test(r.url()), { timeout: 20000 })
         .catch(() => null);
@@ -197,6 +210,7 @@ export async function extractDghg(
         outro: null,
         _diag: {
           cfClearance: (await ctx.cookies()).some((c) => c.name === "cf_clearance"),
+          cfWallUp: /just a moment/i.test(title),
           passMd5Seen: !!passMd5Url,
           finalUrl,
           title,
