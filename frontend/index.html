@@ -221,7 +221,6 @@ select{appearance:auto;cursor:pointer}
       </div>
     </div>
     <div class="try-row">
-      <button class="btn" onclick="loadServers()">📡 Load Servers</button>
       <button class="btn" onclick="doPlay()">▶ Play</button>
       <button class="btn dark" onclick="doStop()">■ Stop</button>
     </div>
@@ -332,7 +331,7 @@ function proxyUrl(url, referer){
   return BASE+'/api/proxy?url='+encodeURIComponent(url)+'&referer='+encodeURIComponent(referer||'https://aniwaves.ru/');
 }
 
-function playHLS(url, provider){
+function playHLS(url){
   var v=$('vv');
   if(hls){hls.destroy();hls=null}
   v.muted = true;            // muted lets the browser autoplay without a gesture
@@ -371,57 +370,35 @@ function playHLS(url, provider){
     else if(v.muted){ v.muted=false; }
   });
 
-  // DGHG: cloudatacdn is IP-gated and blocks our server, so load it
-  // CLIENT-SIDE. The browser fetches the raw m3u8 + segments directly with
-  // the playmogo referer (residential IP + session). Other providers go
-  // through the server-side /api/proxy (CORS-clean, correct content-type).
-  var isDghg = (provider === 'dghg');
-  var proxiedUrl = (url.indexOf('/api/proxy') !== -1)
+  // `url` is either the raw m3u8 (then we proxy it) or already a
+  // /api/proxy URL (then use it as-is). The proxy handles CORS +
+  // the CDN's bogus image/jpeg content-type. Always send the
+  // echovideo referer so the proxy can set the right Origin upstream.
+  var proxyUrl = url.indexOf('/api/proxy') !== -1
     ? url
-    : proxyUrl(url, isDghg ? 'https://playmogo.com/' : 'https://play.echovideo.ru/');
-  console.log('playHLS', isDghg ? 'DGHG (client-side)' : 'proxy', proxiedUrl.slice(0,120));
+    : BASE+'/api/proxy?url='+encodeURIComponent(url)+'&referer='+encodeURIComponent('https://play.echovideo.ru/');
+  console.log('playHLS proxy URL:', proxyUrl.slice(0,120));
 
-  function attachHls(srcUrl, xhrReferer){
-    hls = new Hls({ enableWorker:true, lowLatencyMode:false });
-    if(xhrReferer){
-      hls.config.xhrSetup = function(xhr, u){
-        xhr.setRequestHeader('Referer', xhrReferer);
-        xhr.setRequestHeader('Origin', 'https://playmogo.com');
-      };
-    }
-    hls.loadSource(srcUrl);
+  if(window.Hls&&Hls.isSupported()){
+    hls=new Hls({enableWorker:true, lowLatencyMode:false});
+    hls.loadSource(proxyUrl);
     hls.attachMedia(v);
-    hls.on(Hls.Events.MANIFEST_PARSED, function(){ console.log('HLS manifest parsed'); tryPlay(); });
-    hls.on(Hls.Events.ERROR, function(e,d){
+    hls.on(Hls.Events.MANIFEST_PARSED,function(){
+      console.log('HLS manifest parsed, playing...');
+      tryPlay();
+    });
+    hls.on(Hls.Events.ERROR,function(e,d){
       console.error('HLS error:', d.type, d.details, 'fatal:', d.fatal);
       if(d.fatal){
-        if(d.type===Hls.ErrorTypes.NETWORK_ERROR){
-          // DGHG raw load failed (CORS/blocked) — fall back to server proxy.
-          if(isDghg && srcUrl.indexOf('/api/proxy')===-1){
-            console.log('DGHG client-side failed, falling back to /api/proxy');
-            if(hls){hls.destroy();hls=null;}
-            attachHls(proxyUrl(url, 'https://playmogo.com/'), null);
-            return;
-          }
-          hls.startLoad(); return;
-        }
+        if(d.type===Hls.ErrorTypes.NETWORK_ERROR){hls.startLoad();return;}
         if(d.type===Hls.ErrorTypes.MEDIA_ERROR){hls.recoverMediaError();return;}
         setOverlay('❌','Playback error: '+d.details, '', 'hls.js fatal: '+d.details);
       }
     });
-  }
-
-  if(window.Hls && Hls.isSupported()){
-    if(isDghg){
-      // Try the raw CDN URL directly in the browser first.
-      attachHls(url, 'https://playmogo.com/');
-    } else {
-      attachHls(proxiedUrl, null);
-    }
-  } else if(v.canPlayType('application/vnd.apple.mpegurl')){
-    v.src = isDghg ? url : proxiedUrl;
+  }else if(v.canPlayType('application/vnd.apple.mpegurl')){
+    v.src=proxyUrl;
     v.addEventListener('loadedmetadata', function(){ tryPlay(); }, { once:true });
-  } else {
+  }else{
     setOverlay('❌','HLS not supported');
   }
 }
@@ -472,10 +449,9 @@ function doPlay(){
           sel.appendChild(o);
         });
         if(sel.options.length===0){setOverlay('❌','No servers found');return}
-        // NEW: don't auto-play. Let the user pick a server, then click ▶ Play.
-        setOverlay('🖥️','Select a server below','Then click ▶ Play');
-        $('p_server').focus();
-        return;
+        sel.selectedIndex=0;
+        // Auto-play first server
+        doPlay();
       })
       .catch(function(e){setOverlay('❌','Failed: '+e.message)});
     return;
@@ -505,17 +481,10 @@ function tryNextServer(servers,idx,epId,type){
       console.log('stream response for', srv.name, ':', d);
       if(d.m3u8){
         showVideo(srv.name);
-        // DGHG's CDN (cloudatacdn) is IP-gated and blocks datacenter IPs
-        // (our server can't fetch it). Load it CLIENT-SIDE instead — the
-        // browser has a residential IP + the playmogo session, so hls.js
-        // fetches the m3u8 directly with the playmogo referer. Other
-        // providers use the server-side /api/proxy (CORS-clean).
-        if(d.provider === 'dghg'){
-          playHLS(d.m3u8, 'dghg');
-        } else {
-          var src = (d.proxiedM3u8 && d.proxiedM3u8.length) ? d.proxiedM3u8 : d.m3u8;
-          playHLS(src, d.provider);
-        }
+        // Prefer the server-side proxied (CORS-clean, correct content-type)
+        // URL when present; fall back to proxying the raw m3u8 ourselves.
+        var src = (d.proxiedM3u8 && d.proxiedM3u8.length) ? d.proxiedM3u8 : d.m3u8;
+        playHLS(src);
       }
       else if(d.error){tryNextServer(servers,idx+1,epId,type)}
       else{tryNextServer(servers,idx+1,epId,type);}
