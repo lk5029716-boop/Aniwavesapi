@@ -179,8 +179,30 @@ export async function extractDghg(
     }
 
     if (!m3u8) {
-      logger.warn({ passMd5: !!passMd5Url }, "[DGHG] could not extract m3u8 (CF challenge not cleared, pass_md5 XHR missed, or no <video> src)");
-      return null;
+      const finalUrl = page.url();
+      let title = "";
+      let snippet = "";
+      try {
+        title = await page.title();
+        snippet = (await page.content()).slice(0, 400);
+      } catch { /* ignore */ }
+      logger.warn({ passMd5: !!passMd5Url, finalUrl, title, snippet }, "[DGHG] could not extract m3u8");
+      return {
+        type: "direct",
+        provider: "dghg",
+        m3u8: null as unknown as string,
+        subtitles: [],
+        thumbnails: null,
+        intro: null,
+        outro: null,
+        _diag: {
+          cfClearance: (await ctx.cookies()).some((c) => c.name === "cf_clearance"),
+          passMd5Seen: !!passMd5Url,
+          finalUrl,
+          title,
+          pageSnippet: snippet,
+        },
+      } as any;
     }
 
     logger.info({ m3u8: m3u8.slice(0, 80) }, "[DGHG] OK");

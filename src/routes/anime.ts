@@ -167,6 +167,10 @@ router.get("/debug-dghg", async (req, res): Promise<void> => {
     const stream = await extractDghg(embedUrl, undefined, process.env["ANIWAVES_PROXY_URL"] || null);
     if (stream?.m3u8) {
       res.json({ ok: true, result: { ok: true, m3u8: stream.m3u8, provider: stream.provider } });
+    } else if ((stream as any)?._diag) {
+      // Surface the structured diagnostics so we can see exactly why it failed
+      // (CF cleared? /pass_md5/ seen? what URL did the page end up on?).
+      res.status(502).json({ ok: false, error: "extractDghg failed", diag: (stream as any)._diag });
     } else {
       res.status(502).json({ ok: false, error: "extractDghg returned no m3u8 (CF solve likely failed)" });
     }
