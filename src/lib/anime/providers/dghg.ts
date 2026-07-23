@@ -75,10 +75,16 @@ export async function extractDghg(
 
   let browser: Browser | null = null;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-    });
+    try {
+      browser = await chromium.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+      });
+    } catch (launchErr) {
+      // Surface the real reason (e.g. missing system libs on the host) instead
+      // of the generic "CF solve likely failed".
+      throw new Error("chromium launch failed: " + String(launchErr).slice(0, 300));
+    }
     const ctx: BrowserContext = await browser.newContext({
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       viewport: { width: 1280, height: 800 },
@@ -102,14 +108,14 @@ export async function extractDghg(
     // Retry the page load a few times: CF's challenge is probabilistic, but the
     // first paint usually clears and the player fires /pass_md5/ immediately.
     let cleared = false;
-    for (let attempt = 1; attempt <= 4 && !m3u8; attempt++) {
+    for (let attempt = 1; attempt <= 3 && !m3u8; attempt++) {
       try {
-        await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 25000 });
       } catch (navErr) {
         logger.warn({ error: String(navErr).slice(0, 100) }, "[DGHG] goto error, retrying");
       }
-      // wait for cf_clearance + player XHR
-      for (let i = 0; i < 20 && !m3u8; i++) {
+      // wait for cf_clearance + player XHR (cap 6s per attempt)
+      for (let i = 0; i < 6 && !m3u8; i++) {
         await page.waitForTimeout(1000);
       }
       cleared = (await ctx.cookies()).some((c) => c.name === "cf_clearance");
@@ -131,7 +137,7 @@ export async function extractDghg(
     }
 
     if (!m3u8) {
-      logger.warn({ cfClearance: cleared }, "[DGHG] could not extract m3u8 (CF challenge not cleared or player XHR missed)");
+      logger.warn({ cfClearance: cleared, passMd5: !!passMd5Url }, "[DGHG] could not extract m3u8 (cfClearance="+cleared+", passMd5="+(!!passMd5Url)+")");
       return null;
     }
 
