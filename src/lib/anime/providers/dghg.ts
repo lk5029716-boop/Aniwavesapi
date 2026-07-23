@@ -97,7 +97,7 @@ function extractM3u8Url(body: string): string | null {
  * to dghg_http.py. This defeats the datacenter-IP block that kills the
  * Playwright path on Render.
  */
-async function extractDghgHttp(embedUrl: string): Promise<{ m3u8: string | null; cfWall: boolean; reason?: string }> {
+async function extractDghgHttp(embedUrl: string): Promise<{ m3u8: string | null; cfWall: boolean; reason?: string; detail?: any }> {
   try {
     const out = execFileSync(pythonBin(), [dghgHttpScript(), embedUrl], {
       timeout: 25000,
@@ -109,8 +109,8 @@ async function extractDghgHttp(embedUrl: string): Promise<{ m3u8: string | null;
       logger.info({ m3u8: String(parsed.m3u8).slice(0, 80) }, "[DGHG-http] OK");
       return { m3u8: parsed.m3u8, cfWall: false };
     }
-    logger.warn({ reason: parsed.reason, status: parsed.status }, "[DGHG-http] no m3u8");
-    return { m3u8: null, cfWall: parsed.reason === "cf-wall", reason: parsed.reason };
+    logger.warn({ reason: parsed.reason, status: parsed.status, len: parsed.len, title: parsed.title }, "[DGHG-http] no m3u8");
+    return { m3u8: null, cfWall: parsed.reason === "cf-wall", reason: parsed.reason, detail: parsed };
   } catch (e: any) {
     logger.warn({ error: String(e?.message || e).slice(0, 160) }, "[DGHG-http] exec failed");
     return { m3u8: null, cfWall: false, reason: "exec-failed" };
@@ -151,8 +151,9 @@ export async function extractDghg(
   //    IP can solve the challenge.
   if (!process.env["DGHG_BROWSER_FALLBACK"]) {
     const reason = http.reason || (http.cfWall ? "cf-wall" : "http-failed");
-    logger.warn({ cfWall: http.cfWall, reason }, "[DGHG] HTTP path failed; browser fallback disabled (set DGHG_BROWSER_FALLBACK=1 to enable)");
-    throw new Error(`DGHG_HTTP_FAILED:${reason}`);
+    const detail = http.detail ? ` | len=${http.detail.len} title=${http.detail.title} snippet=${(http.detail.snippet||"").slice(0,200)}` : "";
+    logger.warn({ cfWall: http.cfWall, reason, detail }, "[DGHG] HTTP path failed; browser fallback disabled");
+    throw new Error(`DGHG_HTTP_FAILED:${reason}${detail}`);
   }
   logger.warn("[DGHG] HTTP path yielded nothing — falling back to Playwright browser");
   return extractDghgBrowser(embedUrl, skipData, _proxyUrl);

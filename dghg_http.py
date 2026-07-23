@@ -59,7 +59,14 @@ def extract(embed_url):
 
     m = re.search(r"/pass_md5/[^\s\"'\\]+", html)
     if not m:
-        return {"ok": False, "reason": "no-token"}
+        # Surface what we actually got so we can diagnose IP-based stripping.
+        title = ""
+        tm = re.search(r"<title>(.*?)</title>", html, re.I)
+        if tm:
+            title = tm.group(1)[:80]
+        return {"ok": False, "reason": "no-token", "status": status,
+                "len": len(html), "title": title,
+                "snippet": html[:300]}
 
     pm_url = origin + m.group(0)
     try:
