@@ -239,6 +239,29 @@ router.get("/proxy", async (req, res): Promise<void> => {
   );
 
   try {
+    // CDN / player hosts (cloudatacdn, playmogo, myvidplay, echovideo, ...)
+    // strip or block datacenter IPs (Render). Route those fetches through the
+    // HTTP proxy (webshare) which has a clean IP — same one dghg_http.py uses.
+    const CDN_PROXY_HOSTS = [
+      "cloudatacdn", "playmogo", "myvidplay", "echovideo",
+      "sprintcdn", "owphbf", "weneverbeenfree",
+    ];
+    const needsCdnProxy = CDN_PROXY_HOSTS.some((h) => targetUrl.hostname.includes(h));
+    const cdnProxyUrl =
+      process.env["DGHG_HTTP_PROXY"] || process.env["ANIWAVES_PROXY_URL"] || "";
+    let proxyCfg: { host: string; port: number; auth?: { username: string; password: string } } | undefined;
+    if (needsCdnProxy && cdnProxyUrl) {
+      try {
+        const pu = new URL(cdnProxyUrl);
+        if (pu.protocol.startsWith("http")) {
+          const auth = pu.username
+            ? { username: decodeURIComponent(pu.username), password: decodeURIComponent(pu.password) }
+            : undefined;
+          proxyCfg = { host: pu.hostname, port: parseInt(pu.port || "80", 10), auth };
+        }
+      } catch { /* ignore */ }
+    }
+
     const upstream = await axios.get(urlParam, {
       responseType: "stream",
       timeout: 30000,
@@ -256,6 +279,10 @@ router.get("/proxy", async (req, res): Promise<void> => {
       maxRedirects: 5,
       // Don't let axios throw on a 206 from the CDN.
       validateStatus: (s) => s < 400,
+      // For CDN hosts use the clean-IP HTTP proxy; otherwise disable any
+      // process-wide proxy (Render may set HTTPS_PROXY=127.0.0.1 which would
+      // otherwise refuse the connection).
+      ...(proxyCfg ? { proxy: proxyCfg } : { proxy: false }),
     });
 
     res.setHeader("Access-Control-Allow-Origin", "*");
