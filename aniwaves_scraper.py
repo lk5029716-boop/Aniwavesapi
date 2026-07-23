@@ -22,6 +22,20 @@ def new_session():
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": BASE + "/",
     })
+    # If the Node DGHG extractor solved Cloudflare in a real browser, it passes
+    # the cf_clearance cookie + browser UA here. Apply them so curl_cffi clears
+    # the managed challenge on playmogo / myvidplay (TLS-impersonation alone is
+    # NOT enough -- CF serves the "Just a moment..." interstitial).
+    cf_ua = os.environ.get("DGHG_CF_UA")
+    if cf_ua:
+        s.headers["User-Agent"] = cf_ua
+    cf_cookies = os.environ.get("DGHG_CF_COOKIES")
+    if cf_cookies:
+        try:
+            for c in json.loads(cf_cookies):
+                s.cookies.set(c["name"], c["value"], domain=c.get("domain"))
+        except Exception as e:
+            logger.warning(f"[cf] failed to apply clearance cookies: {e}")
     return s
 
 def list_servers(s, anime_id: int, ep: int):
