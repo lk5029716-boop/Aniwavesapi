@@ -56,8 +56,11 @@ function extractM3u8Url(body: string): string | null {
     idx = end + 1;
   }
   if (candidates.length === 0) return null;
-  const m3u8 = candidates.find((c) => c.includes(".m3u8"));
-  return m3u8 ?? candidates[0];
+  // Prefer an actual .m3u8 URL, then a known CDN host, then any http(s) URL.
+  const m3u8 = candidates.find((c) => /\.m3u8/i.test(c));
+  const cdn = candidates.find((c) => /cloudatacdn\.com|cdn|\.m3u8/i.test(c));
+  const clean = candidates.find((c) => !/http-equiv|w3\.org|schema\.org/i.test(c));
+  return m3u8 ?? cdn ?? clean ?? null;
 }
 
 export async function extractDghg(
@@ -75,69 +78,76 @@ export async function extractDghg(
 
   let browser: Browser | null = null;
   try {
-    try {
-      browser = await chromium.launch({
-        headless: true,
-        args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-      });
-    } catch (launchErr) {
-      // Surface the real reason (e.g. missing system libs on the host) instead
-      // of the generic "CF solve likely failed".
-      throw new Error("chromium launch failed: " + String(launchErr).slice(0, 300));
-    }
+    browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+    });
     const ctx: BrowserContext = await browser.newContext({
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       viewport: { width: 1280, height: 800 },
     });
     const page = await ctx.newPage();
 
-    let passMd5Url: string | null = null;
     let m3u8: string | null = null;
-    page.on("response", async (resp) => {
-      const u = resp.url();
-      if (/\/pass_md5\//i.test(u)) {
-        passMd5Url = u;
-        try {
-          const body = await resp.text();
-          const hit = extractM3u8Url(body);
-          if (hit) m3u8 = hit;
-        } catch { /* body already consumed */ }
-      }
+    let passMd5Url: string | null = null;
+    // Backup listener: just RECORD the pass_md5 URL (never read its body -- the
+    // response body can hang/be consumed by the player's chaotic post-CF
+    // redirects). We fetch it separately via evaluate below.
+    page.on("response", (resp) => {
+      if (/\/pass_md5\//i.test(resp.url())) passMd5Url = resp.url();
     });
 
     // Retry the page load a few times: CF's challenge is probabilistic, but the
     // first paint usually clears and the player fires /pass_md5/ immediately.
-    let cleared = false;
+    // We capture that response DETERMINISTICALLY with waitForResponse (the bare
+    // event listener missed it on some headless setups) and only grab its URL.
     for (let attempt = 1; attempt <= 3 && !m3u8; attempt++) {
       try {
-        await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 25000 });
+        // "commit" returns as soon as the server responds -- Cloudflare's
+        // challenge page otherwise never fires domcontentloaded (it keeps
+        // reloading), which made goto hang. waitForResponse below catches the
+        // real /pass_md5/ XHR once CF clears.
+        await page.goto(embedUrl, { waitUntil: "commit", timeout: 25000 });
       } catch (navErr) {
         logger.warn({ error: String(navErr).slice(0, 100) }, "[DGHG] goto error, retrying");
       }
-      // wait for cf_clearance + player XHR (cap 6s per attempt)
-      for (let i = 0; i < 6 && !m3u8; i++) {
-        await page.waitForTimeout(1000);
+
+      // Actively wait for the pass_md5 response, then read ITS body directly
+      // (re-fetching via evaluate returns a different/garbage body).
+      const resp = await page
+        .waitForResponse((r) => /\/pass_md5\//i.test(r.url()), { timeout: 20000 })
+        .catch(() => null);
+      if (resp) {
+        passMd5Url = resp.url();
+        try {
+          const body = await resp.text();
+          const hit = extractM3u8Url(body);
+          if (hit) m3u8 = hit;
+        } catch (e) {
+          logger.warn({ error: String(e).slice(0, 120) }, "[DGHG] pass_md5 body read failed");
+        }
       }
-      cleared = (await ctx.cookies()).some((c) => c.name === "cf_clearance");
+
+      // Fallback: read the <video>/<source> src straight from the DOM.
+      if (!m3u8) {
+        try {
+          const dom = await page.evaluate(() => {
+            const v = document.querySelector("video");
+            const s = document.querySelector("source");
+            const a = document.querySelector("a[href*='.m3u8']");
+            return { v: v?.getAttribute("src") || null, s: s?.getAttribute("src") || null, a: a?.getAttribute("href") || null };
+          });
+          const cand = dom.v || dom.s || dom.a;
+          if (cand && cand.includes(".m3u8")) m3u8 = cand;
+        } catch { /* ignore */ }
+      }
+
+      const cleared = (await ctx.cookies()).some((c) => c.name === "cf_clearance");
       logger.info({ attempt, cfClearance: cleared, passMd5: !!passMd5Url, m3u8: !!m3u8 }, "[DGHG] load attempt");
     }
 
-    if (!m3u8 && passMd5Url) {
-      // Fallback: fetch the pass_md5 endpoint in the cleared context.
-      try {
-        const r = await page.evaluate(async (url) => {
-          const res = await fetch(url, { credentials: "include" });
-          return await res.text();
-        }, passMd5Url);
-        const hit = extractM3u8Url(r);
-        if (hit) m3u8 = hit;
-      } catch (e) {
-        logger.warn({ error: String(e).slice(0, 120) }, "[DGHG] pass_md5 fetch failed");
-      }
-    }
-
     if (!m3u8) {
-      logger.warn({ cfClearance: cleared, passMd5: !!passMd5Url }, "[DGHG] could not extract m3u8 (cfClearance="+cleared+", passMd5="+(!!passMd5Url)+")");
+      logger.warn({ passMd5: !!passMd5Url }, "[DGHG] could not extract m3u8 (CF challenge not cleared, pass_md5 XHR missed, or no <video> src)");
       return null;
     }
 
