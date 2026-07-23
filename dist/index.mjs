@@ -384,7 +384,6 @@ function cacheSet(key, value, ttl = 300) {
 init_logger();
 var PROXY_BASE = (process.env["ANIWAVES_PROXY_URL"] ?? "").trim();
 var PROXIED_HOSTS = [
-  "aniwaves.ru",
   "echovideo.ru",
   "echovideo.to",
   "play.echovideo.ru",
