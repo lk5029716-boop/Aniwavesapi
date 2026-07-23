@@ -83,9 +83,14 @@ export async function extractDghg(
       env["DGHG_CF_UA"] = cf.userAgent;
       logger.info({ n: cf.cookies.length }, "[DGHG] passing CF clearance to scraper");
     }
+    // CF was solved on the post-redirect host (myvidplay -> playmogo), so the
+    // clearance cookie is scoped to that domain. Pass the FINAL url the browser
+    // landed on to the scraper, otherwise it re-requests myvidplay and 403s again.
+    const scrapeUrl = cf?.finalUrl || embedUrl;
+    logger.info({ scrapeUrl: scrapeUrl.slice(0, 90) }, "[DGHG] scraping resolved url");
     const result = execFileSync(
       "python3",
-      [scraperPath, "--server", embedUrl],
+      [scraperPath, "--server", scrapeUrl],
       { timeout: 15_000, encoding: "utf8", env }
     ).trim();
 
@@ -135,7 +140,7 @@ export async function extractDghg(
  * Render/Docker the browser is already provisioned by the existing Playwright
  * usage in this repo (test_dghg.cjs, playwright-extractor.ts).
  */
-async function solveCloudflare(embedUrl: string): Promise<{ cookies: { name: string; value: string; domain?: string }[]; userAgent: string } | null> {
+async function solveCloudflare(embedUrl: string): Promise<{ cookies: { name: string; value: string; domain?: string }[]; userAgent: string; finalUrl?: string } | null> {
   const host = (() => { try { return new URL(embedUrl).hostname; } catch { return ""; } })();
   if (!host.includes("myvidplay") && !host.includes("playmogo")) return null;
 
@@ -177,7 +182,7 @@ async function solveCloudflare(embedUrl: string): Promise<{ cookies: { name: str
     const userAgent = (await page.evaluate(() => navigator.userAgent).catch(() => "")) as string;
     const ok = cookies.some((c) => c.name === "cf_clearance");
     logger.info({ cfClearance: ok, cookieCount: cookies.length, userAgent: userAgent.slice(0, 40) }, "[DGHG] CF solve done");
-    return ok ? { cookies, userAgent } : null;
+    return ok ? { cookies, userAgent, finalUrl } : null;
   } catch (e) {
     logger.warn({ error: String(e).slice(0, 200) }, "[DGHG] CF solve exception");
     return null;
