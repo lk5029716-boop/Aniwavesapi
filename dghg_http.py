@@ -2,14 +2,18 @@
 """DGHG HTTP-only extraction (no browser, no Cloudflare JS challenge).
 
 Cloudflare only challenges the *pretty* HTML document and TLS fingerprints
-from undici/curl_cffi. Python's stdlib urllib (OpenSSL, HTTP/1.1) passes the
-/e/<id>/ajax endpoint, which embeds the /pass_md5/<hash>/<token> URL. We grab
-that and GET it; the body is the CDN m3u8.
+from undici/curl_cffi. Python's stdlib urllib (OpenSSL, HTTP/1.1) passes
+the /e/<id>/ajax endpoint, which embeds the /pass_md5/<hash>/<token> URL.
 
-IMPORTANT: playmogo serves a *stripped* (token-less) page to datacenter IPs
-(Render gets a ~5.6KB variant with no /pass_md5/ token). Set DGHG_HTTP_PROXY
-to a residential proxy so the request originates from a clean IP and the token
-is served. Without it, datacenter deployments return reason "no-token".
+KEY: playmogo.com / myvidplay.com *strip* the /pass_md5/ token for
+datacenter IPs (Render gets a ~5.6KB token-less page -> "no-token").
+The DoodStream network shares the SAME video id + CDN across its public
+mirrors (d0000d.com, dood.to, ds2play.com, vidply.com, ...). Those
+mirrors serve the full token page even from datacenter IPs, so we REWRITE
+the host to d0000d.com and extract there. No proxy, no browser, no IP block.
+
+DGHG_HTTP_PROXY is still honored (optional residential proxy fallback) for
+the rare case a mirror starts stripping too.
 
 Usage:  python3 dghg_http.py <embedUrl>
 Prints JSON: {"ok": true, "m3u8": "..."} or {"ok": false, "reason": "..."}
@@ -57,13 +61,19 @@ def extract(embed_url):
     if not host or not vid:
         return {"ok": False, "reason": "no-id"}
 
-    origin = "https://" + host
+    # playmogo.com / myvidplay.com strip the /pass_md5/ token for datacenter
+    # IPs (Render gets a ~5.6KB token-less page). The DoodStream network
+    # shares the SAME video id + CDN across its mirrors; the public mirrors
+    # (d0000d.com, dood.to, etc.) serve the full token page even from
+    # datacenter IPs. Rewrite to a known-good mirror — no proxy, no browser.
+    MIRROR = "d0000d.com"
+    origin = "https://" + MIRROR
     ajax_url = f"{origin}/e/{vid}/ajax"
     try:
         status, html = _get(ajax_url, {
             "User-Agent": UA,
             "Accept": "text/html,application/xhtml+xml",
-            "Referer": ajax_url,
+            "Referer": f"https://{MIRROR}/e/{vid}",
         })
     except urllib.error.HTTPError as e:
         if e.code in (403, 503):
