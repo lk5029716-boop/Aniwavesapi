@@ -2033,7 +2033,8 @@ router2.get("/stream", async (req, res) => {
     outro: sourcesResult.skip_data?.outro
   }, proxyUrl);
   if (stream?.m3u8) {
-    const proxiedM3u8 = `/api/proxy?url=${encodeURIComponent(stream.m3u8)}&referer=${encodeURIComponent("https://play.echovideo.ru/")}`;
+    const referer = stream.provider === "dghg" ? "https://playmogo.com/" : "https://play.echovideo.ru/";
+    const proxiedM3u8 = `/api/proxy?url=${encodeURIComponent(stream.m3u8)}&referer=${encodeURIComponent(referer)}`;
     res.json({ ...stream, proxiedM3u8, _server: "direct" });
     return;
   }

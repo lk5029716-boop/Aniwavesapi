@@ -136,11 +136,17 @@ router.get("/stream", async (req, res): Promise<void> => {
   }, proxyUrl);
 
   if (stream?.m3u8) {
-    // Browser can't load the raw CDN URL (CORS locked to play.echovideo.ru,
-    // content-type is image/jpeg). Wrap it through our own /api/proxy so the
-    // client fetches same-origin. appendSubFetch / relative segments are
-    // rewritten by the proxy back into proxied URLs.
-    const proxiedM3u8 = `/api/proxy?url=${encodeURIComponent(stream.m3u8)}&referer=${encodeURIComponent("https://play.echovideo.ru/")}`;
+    // Browser can't load the raw CDN URL (CORS locked, content-type is
+    // image/jpeg). Wrap it through our own /api/proxy so the client fetches
+    // same-origin. appendSubFetch / relative segments are rewritten by the
+    // proxy back into proxied URLs. The referer MUST match the CDN that owns
+    // the m3u8: echovideo -> play.echovideo.ru, DGHG/DoodStream -> playmogo.com
+    // (cloudatacdn rejects the echovideo referer -> "All servers failed").
+    const referer =
+      stream.provider === "dghg"
+        ? "https://playmogo.com/"
+        : "https://play.echovideo.ru/";
+    const proxiedM3u8 = `/api/proxy?url=${encodeURIComponent(stream.m3u8)}&referer=${encodeURIComponent(referer)}`;
     res.json({ ...stream, proxiedM3u8, _server: "direct" });
     return;
   }
