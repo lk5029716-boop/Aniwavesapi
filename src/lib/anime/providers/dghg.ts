@@ -80,13 +80,45 @@ export async function extractDghg(
   try {
     browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+      // Stealth: Render's chromium is flagged as automation (navigator.webdriver,
+      // datacenter IP), so playmogo's player never fires /pass_md5/. These args
+      // make headless chromium look like a real user.
+      args: [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-blink-features=AutomationControlled",
+        "--headless=new",
+      ],
     });
     const ctx: BrowserContext = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      viewport: { width: 1280, height: 800 },
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      viewport: { width: 1366, height: 768 },
+      locale: "en-US",
+      timezoneId: "America/New_York",
     });
     const page = await ctx.newPage();
+    // Spoof webdriver + automation artifacts before any script runs.
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+      const navAny = navigator as any;
+      if (!navAny.chrome) {
+        Object.defineProperty(navigator, "chrome", { get: () => ({ runtime: {} }), configurable: true });
+      }
+      const permDesc = Object.getOwnPropertyDescriptor(navigator, "permissions");
+      if (permDesc) {
+        Object.defineProperty(navigator, "permissions", {
+          get: () => ({
+            query: (p: { name: string }) =>
+              p.name === "notifications"
+                ? Promise.resolve({ state: "prompt", addEventListener() {}, removeEventListener() {} })
+                : (permDesc.get as any).call(navigator).query(p),
+          }),
+          configurable: true,
+        });
+      }
+    });
 
     let m3u8: string | null = null;
     let passMd5Url: string | null = null;
