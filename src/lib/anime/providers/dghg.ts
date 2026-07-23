@@ -141,29 +141,45 @@ async function solveCloudflare(embedUrl: string): Promise<{ cookies: { name: str
 
   let browser: Browser | null = null;
   try {
-    browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+    browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process", "--no-zygote"],
+    });
     const ctx: BrowserContext = await browser.newContext({
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       viewport: { width: 1280, height: 800 },
     });
     const page = await ctx.newPage();
-    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+    page.on("console", (mm) => logger.debug({ cfConsole: mm.text().slice(0, 120) }, "[DGHG] CF page console"));
+    let finalUrl = embedUrl;
+    try {
+      const resp = await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+      finalUrl = page.url();
+      logger.info({ status: resp?.status(), finalUrl }, "[DGHG] CF page loaded");
+    } catch (navErr) {
+      logger.warn({ error: String(navErr).slice(0, 120) }, "[DGHG] CF goto error (continuing to wait for cookie)");
+    }
 
-    const deadline = Date.now() + 30_000;
+    // Wait until Cloudflare drops the challenge: cf_clearance cookie appears
+    // and the page is no longer the "Just a moment..." interstitial.
+    const deadline = Date.now() + 45_000;
+    let cleared = false;
     while (Date.now() < deadline) {
-      const cleared = (await ctx.cookies()).some((c) => c.name === "cf_clearance");
+      const cookies = await ctx.cookies();
+      cleared = cookies.some((c) => c.name === "cf_clearance");
       const body = (await page.content().catch(() => "")) || "";
-      if (cleared && !/just a moment/i.test(body)) break;
-      await page.waitForTimeout(1000);
+      const stillChallenge = /just a moment|checking your browser|challenge-platform/i.test(body);
+      if (cleared && !stillChallenge) break;
+      await page.waitForTimeout(1500);
     }
 
     const cookies = (await ctx.cookies()).map((c) => ({ name: c.name, value: c.value, domain: c.domain }));
-    const userAgent = (await page.evaluate(() => navigator.userAgent)) as string;
+    const userAgent = (await page.evaluate(() => navigator.userAgent).catch(() => "")) as string;
     const ok = cookies.some((c) => c.name === "cf_clearance");
-    logger.info({ cfClearance: ok }, "[DGHG] CF solve done");
+    logger.info({ cfClearance: ok, cookieCount: cookies.length, userAgent: userAgent.slice(0, 40) }, "[DGHG] CF solve done");
     return ok ? { cookies, userAgent } : null;
   } catch (e) {
-    logger.warn({ error: String(e).slice(0, 120) }, "[DGHG] CF solve exception");
+    logger.warn({ error: String(e).slice(0, 200) }, "[DGHG] CF solve exception");
     return null;
   } finally {
     await browser?.close().catch(() => {});
