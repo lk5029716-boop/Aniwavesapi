@@ -35,6 +35,31 @@ export function isDghgServer(serverName: string): boolean {
   return n.includes("dghg") || n.includes("dood") || n.includes("playmogo");
 }
 
+/**
+ * Pull the first http(s) URL (preferably an .m3u8) out of a /pass_md5/ response
+ * body. Avoids regex quoting pitfalls by scanning for the scheme and stopping
+ * at the first whitespace/quote.
+ */
+function extractM3u8Url(body: string): string | null {
+  const candidates: string[] = [];
+  let idx = 0;
+  while (true) {
+    const start = body.indexOf("http", idx);
+    if (start === -1) break;
+    let end = start;
+    while (end < body.length) {
+      const ch = body[end];
+      if (ch === '"' || ch === "'" || ch === " " || ch === "\n" || ch === "\r" || ch === ")" || ch === ">" || ch === "<") break;
+      end++;
+    }
+    if (end > start) candidates.push(body.slice(start, end));
+    idx = end + 1;
+  }
+  if (candidates.length === 0) return null;
+  const m3u8 = candidates.find((c) => c.includes(".m3u8"));
+  return m3u8 ?? candidates[0];
+}
+
 export async function extractDghg(
   embedUrl: string,
   skipData?: { intro?: [number, number]; outro?: [number, number] },
@@ -68,9 +93,8 @@ export async function extractDghg(
         passMd5Url = u;
         try {
           const body = await resp.text();
-          const hit = (body.match(/https?:\/\/[^\s"')]+\.m3u8[^\s"')]*/i)
-            || (body.match(/https?:\/\/[^\s"')]+/i));
-          if (hit) m3u8 = hit[0];
+          const hit = extractM3u8Url(body);
+          if (hit) m3u8 = hit;
         } catch { /* body already consumed */ }
       }
     });
@@ -99,8 +123,8 @@ export async function extractDghg(
           const res = await fetch(url, { credentials: "include" });
           return await res.text();
         }, passMd5Url);
-        const hit = (r.match(/https?:\/\/[^\s"')]+\.m3u8[^\s"')]*/i)) || (r.match(/https?:\/\/[^\s"')]+/i));
-        if (hit) m3u8 = hit[0];
+        const hit = extractM3u8Url(r);
+        if (hit) m3u8 = hit;
       } catch (e) {
         logger.warn({ error: String(e).slice(0, 120) }, "[DGHG] pass_md5 fetch failed");
       }
