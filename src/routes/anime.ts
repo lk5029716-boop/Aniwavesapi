@@ -159,17 +159,17 @@ router.get("/debug-dghg", async (req, res): Promise<void> => {
     return;
   }
 
-  const scraperPath = process.env["ANIWAVES_SCRAPER_PATH"] || "/opt/render/project/src/aniwaves_scraper.py";
-
+  // Route through extractDghg (which solves Cloudflare in a real browser
+  // and passes cf_clearance to the scraper). Calling the Python scraper
+  // directly bypasses the CF-solve and always 403s on myvidplay/playmogo.
   try {
-    const { execFileSync } = await import("child_process");
-    const result = execFileSync(
-      "python3",
-      [scraperPath, "--server", embedUrl],
-      { timeout: 30_000, encoding: "utf8", env: { ...process.env } }
-    ).trim();
-    const parsed = JSON.parse(result);
-    res.json({ ok: true, result: parsed });
+    const { extractDghg } = await import("../lib/anime/providers/dghg.js");
+    const stream = await extractDghg(embedUrl, undefined, process.env["ANIWAVES_PROXY_URL"] || null);
+    if (stream?.m3u8) {
+      res.json({ ok: true, result: { ok: true, m3u8: stream.m3u8, provider: stream.provider } });
+    } else {
+      res.status(502).json({ ok: false, error: "extractDghg returned no m3u8 (CF solve likely failed)" });
+    }
   } catch (err) {
     const e = err as Error & { stderr?: Buffer; status?: number };
     res.status(502).json({
