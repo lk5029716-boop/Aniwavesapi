@@ -2089,6 +2089,8 @@ router2.get("/proxy", async (req, res) => {
       referer = "https://aniwaves.ru/";
     } else if (host.includes("weneverbeenfree")) {
       referer = "https://aniwaves.ru/";
+    } else if (host.includes("cloudatacdn")) {
+      referer = "https://playmogo.com/";
     } else {
       referer = "https://play.echovideo.ru/";
     }

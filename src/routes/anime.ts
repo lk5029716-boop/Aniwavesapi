@@ -218,6 +218,10 @@ router.get("/proxy", async (req, res): Promise<void> => {
       referer = "https://aniwaves.ru/";
     } else if (host.includes("weneverbeenfree")) {
       referer = "https://aniwaves.ru/";
+    } else if (host.includes("cloudatacdn")) {
+      // DGHG / DoodStream CDN: token is bound to the playmogo/myvidplay
+      // referer; the echovideo default 403s the segments -> frontend "failed".
+      referer = "https://playmogo.com/";
     } else {
       referer = "https://play.echovideo.ru/";
     }
