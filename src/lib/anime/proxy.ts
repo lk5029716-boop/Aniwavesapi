@@ -16,13 +16,9 @@ import { logger } from "../logger.js";
 
 const PROXY_BASE = (process.env["ANIWAVES_PROXY_URL"] ?? "").trim();
 
-/** Hosts that may need to be proxied (Cloudflare-fronted).
- *  NOTE: aniwaves.ru itself is reached fine from a datacenter IP (Render) for
- *  /ajax/* — only the PLAYER CDN hosts (playmogo/myvidplay) strip the token
- *  for datacenter IPs. Proxying aniwaves.ru through an HTTP proxy can get it
- *  challenged/blocked, so it is deliberately NOT in this list. The player
- *  hosts are extracted by dghg_http.py via DGHG_HTTP_PROXY instead. */
+/** Hosts that may need to be proxied (Cloudflare-fronted). */
 const PROXIED_HOSTS = [
+  "aniwaves.ru",
   "echovideo.ru",
   "echovideo.to",
   "play.echovideo.ru",

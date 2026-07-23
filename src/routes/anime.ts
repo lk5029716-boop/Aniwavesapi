@@ -136,17 +136,11 @@ router.get("/stream", async (req, res): Promise<void> => {
   }, proxyUrl);
 
   if (stream?.m3u8) {
-    // Browser can't load the raw CDN URL (CORS locked, content-type is
-    // image/jpeg). Wrap it through our own /api/proxy so the client fetches
-    // same-origin. appendSubFetch / relative segments are rewritten by the
-    // proxy back into proxied URLs. The referer MUST match the CDN that owns
-    // the m3u8: echovideo -> play.echovideo.ru, DGHG/DoodStream -> playmogo.com
-    // (cloudatacdn rejects the echovideo referer -> "All servers failed").
-    const referer =
-      stream.provider === "dghg"
-        ? "https://playmogo.com/"
-        : "https://play.echovideo.ru/";
-    const proxiedM3u8 = `/api/proxy?url=${encodeURIComponent(stream.m3u8)}&referer=${encodeURIComponent(referer)}`;
+    // Browser can't load the raw CDN URL (CORS locked to play.echovideo.ru,
+    // content-type is image/jpeg). Wrap it through our own /api/proxy so the
+    // client fetches same-origin. appendSubFetch / relative segments are
+    // rewritten by the proxy back into proxied URLs.
+    const proxiedM3u8 = `/api/proxy?url=${encodeURIComponent(stream.m3u8)}&referer=${encodeURIComponent("https://play.echovideo.ru/")}`;
     res.json({ ...stream, proxiedM3u8, _server: "direct" });
     return;
   }
@@ -165,18 +159,16 @@ router.get("/debug-dghg", async (req, res): Promise<void> => {
     return;
   }
 
-  // Route through extractDghg. Primary path is pure-HTTP (Python urllib, which
-  // passes Cloudflare's TLS fingerprint that Node fetch/curl_cffi fail on). No
-  // browser or CF JS-challenge needed, so it works from datacenter IPs (Render).
+  // Route through extractDghg (which solves Cloudflare in a real browser
+  // and passes cf_clearance to the scraper). Calling the Python scraper
+  // directly bypasses the CF-solve and always 403s on myvidplay/playmogo.
   try {
     const { extractDghg } = await import("../lib/anime/providers/dghg.js");
     const stream = await extractDghg(embedUrl, undefined, process.env["ANIWAVES_PROXY_URL"] || null);
     if (stream?.m3u8) {
       res.json({ ok: true, result: { ok: true, m3u8: stream.m3u8, provider: stream.provider } });
-    } else if ((stream as any)?._diag) {
-      res.status(502).json({ ok: false, error: "extractDghg failed", diag: (stream as any)._diag });
     } else {
-      res.status(502).json({ ok: false, error: "extractDghg returned no m3u8" });
+      res.status(502).json({ ok: false, error: "extractDghg returned no m3u8 (CF solve likely failed)" });
     }
   } catch (err) {
     const e = err as Error & { stderr?: Buffer; status?: number };
@@ -185,6 +177,7 @@ router.get("/debug-dghg", async (req, res): Promise<void> => {
       error: e.message,
       stderr: e.stderr?.toString().slice(0, 500),
       status: e.status,
+      scraperPath,
       embedUrl: embedUrl.slice(0, 100),
     });
   }
@@ -224,10 +217,6 @@ router.get("/proxy", async (req, res): Promise<void> => {
       referer = "https://aniwaves.ru/";
     } else if (host.includes("weneverbeenfree")) {
       referer = "https://aniwaves.ru/";
-    } else if (host.includes("cloudatacdn")) {
-      // DGHG / DoodStream CDN: token is bound to the playmogo/myvidplay
-      // referer; the echovideo default 403s the segments -> frontend "failed".
-      referer = "https://playmogo.com/";
     } else {
       referer = "https://play.echovideo.ru/";
     }
@@ -239,29 +228,6 @@ router.get("/proxy", async (req, res): Promise<void> => {
   );
 
   try {
-    // CDN / player hosts (cloudatacdn, playmogo, myvidplay, echovideo, ...)
-    // strip or block datacenter IPs (Render). Route those fetches through the
-    // HTTP proxy (webshare) which has a clean IP — same one dghg_http.py uses.
-    const CDN_PROXY_HOSTS = [
-      "cloudatacdn", "playmogo", "myvidplay", "echovideo",
-      "sprintcdn", "owphbf", "weneverbeenfree",
-    ];
-    const needsCdnProxy = CDN_PROXY_HOSTS.some((h) => targetUrl.hostname.includes(h));
-    const cdnProxyUrl =
-      process.env["DGHG_HTTP_PROXY"] || process.env["ANIWAVES_PROXY_URL"] || "";
-    let proxyCfg: { host: string; port: number; auth?: { username: string; password: string } } | undefined;
-    if (needsCdnProxy && cdnProxyUrl) {
-      try {
-        const pu = new URL(cdnProxyUrl);
-        if (pu.protocol.startsWith("http")) {
-          const auth = pu.username
-            ? { username: decodeURIComponent(pu.username), password: decodeURIComponent(pu.password) }
-            : undefined;
-          proxyCfg = { host: pu.hostname, port: parseInt(pu.port || "80", 10), auth };
-        }
-      } catch { /* ignore */ }
-    }
-
     const upstream = await axios.get(urlParam, {
       responseType: "stream",
       timeout: 30000,
@@ -279,10 +245,6 @@ router.get("/proxy", async (req, res): Promise<void> => {
       maxRedirects: 5,
       // Don't let axios throw on a 206 from the CDN.
       validateStatus: (s) => s < 400,
-      // For CDN hosts use the clean-IP HTTP proxy; otherwise disable any
-      // process-wide proxy (Render may set HTTPS_PROXY=127.0.0.1 which would
-      // otherwise refuse the connection).
-      ...(proxyCfg ? { proxy: proxyCfg } : { proxy: false }),
     });
 
     res.setHeader("Access-Control-Allow-Origin", "*");

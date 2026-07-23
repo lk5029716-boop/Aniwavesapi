@@ -345,13 +345,13 @@ router.get("/health", async (_req, res) => {
   } catch {
     curlCffiAvailable = false;
   }
-  const scraperPath = process.env["ANIWAVES_SCRAPER_PATH"] || "";
+  const scraperPath2 = process.env["ANIWAVES_SCRAPER_PATH"] || "";
   res.json({
     status: "ok",
     timestamp: (/* @__PURE__ */ new Date()).toISOString(),
     curl: curlAvailable,
     curlCffi: curlCffiAvailable,
-    scraperPath: scraperPath || "(not set)",
+    scraperPath: scraperPath2 || "(not set)",
     node: process.version,
     env: process.env.NODE_ENV || "development",
     chromium: chromiumPath || "not found",
@@ -384,6 +384,7 @@ function cacheSet(key, value, ttl = 300) {
 init_logger();
 var PROXY_BASE = (process.env["ANIWAVES_PROXY_URL"] ?? "").trim();
 var PROXIED_HOSTS = [
+  "aniwaves.ru",
   "echovideo.ru",
   "echovideo.to",
   "play.echovideo.ru",
@@ -2032,8 +2033,7 @@ router2.get("/stream", async (req, res) => {
     outro: sourcesResult.skip_data?.outro
   }, proxyUrl);
   if (stream?.m3u8) {
-    const referer = stream.provider === "dghg" ? "https://playmogo.com/" : "https://play.echovideo.ru/";
-    const proxiedM3u8 = `/api/proxy?url=${encodeURIComponent(stream.m3u8)}&referer=${encodeURIComponent(referer)}`;
+    const proxiedM3u8 = `/api/proxy?url=${encodeURIComponent(stream.m3u8)}&referer=${encodeURIComponent("https://play.echovideo.ru/")}`;
     res.json({ ...stream, proxiedM3u8, _server: "direct" });
     return;
   }
@@ -2050,10 +2050,8 @@ router2.get("/debug-dghg", async (req, res) => {
     const stream = await extractDghg2(embedUrl, void 0, process.env["ANIWAVES_PROXY_URL"] || null);
     if (stream?.m3u8) {
       res.json({ ok: true, result: { ok: true, m3u8: stream.m3u8, provider: stream.provider } });
-    } else if (stream?._diag) {
-      res.status(502).json({ ok: false, error: "extractDghg failed", diag: stream._diag });
     } else {
-      res.status(502).json({ ok: false, error: "extractDghg returned no m3u8" });
+      res.status(502).json({ ok: false, error: "extractDghg returned no m3u8 (CF solve likely failed)" });
     }
   } catch (err) {
     const e = err;
@@ -2062,6 +2060,7 @@ router2.get("/debug-dghg", async (req, res) => {
       error: e.message,
       stderr: e.stderr?.toString().slice(0, 500),
       status: e.status,
+      scraperPath,
       embedUrl: embedUrl.slice(0, 100)
     });
   }
@@ -2089,8 +2088,6 @@ router2.get("/proxy", async (req, res) => {
       referer = "https://aniwaves.ru/";
     } else if (host.includes("weneverbeenfree")) {
       referer = "https://aniwaves.ru/";
-    } else if (host.includes("cloudatacdn")) {
-      referer = "https://playmogo.com/";
     } else {
       referer = "https://play.echovideo.ru/";
     }
@@ -2100,28 +2097,6 @@ router2.get("/proxy", async (req, res) => {
     "proxying stream URL"
   );
   try {
-    const CDN_PROXY_HOSTS = [
-      "cloudatacdn",
-      "playmogo",
-      "myvidplay",
-      "echovideo",
-      "sprintcdn",
-      "owphbf",
-      "weneverbeenfree"
-    ];
-    const needsCdnProxy = CDN_PROXY_HOSTS.some((h) => targetUrl.hostname.includes(h));
-    const cdnProxyUrl = process.env["DGHG_HTTP_PROXY"] || process.env["ANIWAVES_PROXY_URL"] || "";
-    let proxyCfg;
-    if (needsCdnProxy && cdnProxyUrl) {
-      try {
-        const pu = new URL(cdnProxyUrl);
-        if (pu.protocol.startsWith("http")) {
-          const auth = pu.username ? { username: decodeURIComponent(pu.username), password: decodeURIComponent(pu.password) } : void 0;
-          proxyCfg = { host: pu.hostname, port: parseInt(pu.port || "80", 10), auth };
-        }
-      } catch {
-      }
-    }
     const upstream = await axios5.get(urlParam, {
       responseType: "stream",
       timeout: 3e4,
@@ -2137,11 +2112,7 @@ router2.get("/proxy", async (req, res) => {
       },
       maxRedirects: 5,
       // Don't let axios throw on a 206 from the CDN.
-      validateStatus: (s) => s < 400,
-      // For CDN hosts use the clean-IP HTTP proxy; otherwise disable any
-      // process-wide proxy (Render may set HTTPS_PROXY=127.0.0.1 which would
-      // otherwise refuse the connection).
-      ...proxyCfg ? { proxy: proxyCfg } : { proxy: false }
+      validateStatus: (s) => s < 400
     });
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "Range");

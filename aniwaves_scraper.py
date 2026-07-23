@@ -17,15 +17,7 @@ IMPERSONATE = "chrome124"
 logger = logging.getLogger(__name__)
 
 def new_session():
-    # Route the ENTIRE chain (aniwaves.ru ajax + player embeds) through a
-    # clean IP. Cloudflare blocks datacenter IPs at BOTH layers: aniwaves.ru
-    # /ajax/sources returns an HTML interstitial, and playmogo strips the
-    # /pass_md5/ token. A residential proxy (webshare) fixes both.
-    proxy = os.environ.get("ANIWAVES_PROXY_URL") or os.environ.get("DGHG_HTTP_PROXY") or ""
-    s = cffi.Session(
-        impersonate=IMPERSONATE,
-        proxies={"http": proxy, "https": proxy} if proxy else None,
-    )
+    s = cffi.Session(impersonate=IMPERSONATE)
     s.headers.update({
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": BASE + "/",
@@ -129,28 +121,25 @@ def resolve_m3u8(s, embed_url: str):
     if info and "sources" in info:
         return info  # already decoded JSON with sources/tracks
 
-    # DGHG / playmogo: the embed page runs $.get('/pass_md5/<hash>/<token>')
-    # where <hash> is NOT 32-hex (e.g. "261114124-52-53-<ts>-<md5>"). The
-    # /e/<id>/ajax endpoint embeds the token reliably. Fetch that, grab the
-    # /pass_md5/ URL, then GET it to get the base CDN URL.
-    ajax_url = f"{origin}/e/{key}/ajax"
-    _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    page_r = proxied_get(ajax_url, headers={"Referer": embed_url, "User-Agent": _UA}, timeout=15)
+    # DGHG / playmogo: must extract pass_md5 hash+token from page HTML
+    # then call /pass_md5/<hash>/<token> to get base CDN URL
+    page_r = proxied_get(embed_url, headers={"Referer": BASE + "/"}, timeout=15)
     if page_r.status_code == 200:
-        m = re.search(r"/pass_md5/([^\\s\"'\\\\]+)", page_r.text)
+        # Look for /pass_md5/<hash>/<token> in the page
+        m = re.search(r"/pass_md5/([a-f0-9]{32})/([a-zA-Z0-9_-]+)", page_r.text)
         if m:
-            pm_url = origin + m.group(1)
+            md5_hash = m.group(1)
+            token = m.group(2)
             pass_r = proxied_get(
-                pm_url,
-                headers={"Referer": ajax_url, "X-Requested-With": "XMLHttpRequest",
-                          "User-Agent": _UA, "Accept": "*/*"},
-                timeout=15, allow_redirects=True,
+                f"{origin}/pass_md5/{md5_hash}/{token}",
+                headers=headers, timeout=15, allow_redirects=True,
             )
             if pass_r.status_code == 200:
                 txt = pass_r.text.strip()
                 if txt.startswith("http"):
+                    # txt is the base CDN URL
                     return {"sources": [{"file": txt + "/index-f1-v1-a1.m3u8",
-                                         "type": "hls"}], "raw": txt, "token": ""}
+                                         "type": "hls"}], "raw": txt, "token": token}
 
     raise RuntimeError(f"player {origin} did not return sources (status {page_r.status_code})")
 
