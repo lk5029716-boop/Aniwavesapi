@@ -449,9 +449,10 @@ function doPlay(){
           sel.appendChild(o);
         });
         if(sel.options.length===0){setOverlay('❌','No servers found');return}
-        sel.selectedIndex=0;
-        // Auto-play first server
-        doPlay();
+        // NEW: don't auto-play. Let the user pick a server, then click ▶ Play.
+        setOverlay('🖥️','Select a server below','Then click ▶ Play');
+        $('p_server').focus();
+        return;
       })
       .catch(function(e){setOverlay('❌','Failed: '+e.message)});
     return;
